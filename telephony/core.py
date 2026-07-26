@@ -27,11 +27,20 @@ MAX_TURNS = 12
 class NegotiationSession:
     """One live call. Not thread-safe; one session per CallSid."""
 
-    def __init__(self) -> None:
-        self._node = _graph.build_call_graph()   # this call's fresh opening node
+    def __init__(self, call_id: str = "") -> None:
+        # The tactic graph is canonical and shared across every call - this
+        # returns the same five nodes each time, so exemplars accumulate.
+        self._node = _graph.get_or_build_call_graph()
+        self.call_id = call_id
         self.transcript: list[str] = []
         self.status: str = "in_progress"
         self.turns: int = 0
+        # Trajectory carried across webhook spawns; the walker writes a
+        # CallRecord from it on the terminal turn.
+        self.agent_lines: list[str] = []
+        self.tactic_path: list[str] = []
+        self.edge_path: list[str] = []
+        self.deal_terms: str = ""
 
     def start(self) -> tuple[str, str]:
         """Begin the call: the agent's opening line. Returns (line, status)."""
@@ -52,21 +61,34 @@ class NegotiationSession:
         w = _agent.NegotiationTurn(
             rep_utterance=rep_utterance,
             transcript=list(self.transcript),
+            agent_lines=list(self.agent_lines),
+            tactic_path=list(self.tactic_path),
+            edge_path=list(self.edge_path),
+            deal_terms=self.deal_terms,
+            call_id=self.call_id,
         )
         spawn(w, self._node)
 
         self.transcript = list(w.transcript)
+        self.agent_lines = list(w.agent_lines)
+        self.tactic_path = list(w.tactic_path)
+        self.edge_path = list(w.edge_path)
+        self.deal_terms = w.deal_terms
         self.status = w.status
         if w.end_node is not None:
             self._node = w.end_node
         return w.agent_line, w.status
 
 
-def use_mock_llm(outputs: list) -> None:
-    """Swap the negotiation model for a deterministic mock (offline tests).
+def use_mock_llm(gen_outputs: list, fast_outputs: list) -> None:
+    """Swap both negotiation models for deterministic mocks (offline tests).
 
-    `outputs` are consumed one per by-llm call, in order (strings for the
-    generated lines, RepIntent members for the classifications).
+    Generation and classification run on separate models, so they need
+    separate queues:
+      gen_outputs  - one string per `generate_line` call.
+      fast_outputs - per turn: the rep's reply, the RepIntent, and (only when
+                     the intent is ACCEPTED) a Commitment for the gate.
     """
     from byllm.lib import MockLLM
-    _agent.llm = MockLLM(model_name="mockllm", config={"outputs": outputs})
+    _agent.llm = MockLLM(model_name="mockllm", config={"outputs": list(gen_outputs)})
+    _agent.fast = MockLLM(model_name="mockllm", config={"outputs": list(fast_outputs)})
