@@ -71,11 +71,14 @@ class NegotiationSession:
         return w.agent_line, w.status
 
 
-def use_mock_llm(outputs: list) -> None:
-    """Swap the negotiation model for a deterministic mock (offline tests).
+def use_mock_llm(dialogue_outputs: list, classify_outputs: list) -> None:
+    """Swap both negotiation models for deterministic mocks (offline tests).
 
-    `outputs` are consumed one per by-llm call, in order (strings for the
-    generated lines, RepIntent members for the classifications).
+    classify_response runs on its own model (agent.classifier_llm, a lighter
+    model to keep per-turn latency under Twilio's 15s webhook timeout) while
+    generate_line/rep_reply run on agent.llm - each needs its own outputs
+    queue, consumed one per by-llm call in that model's own call order.
     """
     from byllm.lib import MockLLM
-    _agent.llm = MockLLM(model_name="mockllm", config={"outputs": outputs})
+    _agent.llm = MockLLM(model_name="mockllm", config={"outputs": dialogue_outputs})
+    _agent.classifier_llm = MockLLM(model_name="mockllm", config={"outputs": classify_outputs})

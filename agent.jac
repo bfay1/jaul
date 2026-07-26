@@ -24,6 +24,16 @@ import from graph {
 # accepts it. Revisit if byllm is ever upgraded.
 glob llm: Model | MockLLM = Model(model_name="claude-sonnet-4-6");
 
+# classify_response is a simple 5-way classification - a lighter/faster model
+# cuts real latency off the per-turn critical path (Twilio hard-caps a webhook
+# response at 15s; every turn already makes two sequential LLM calls before
+# TTS even starts - see telephony/voice.py). UNVERIFIED against a live key:
+# Haiku 4.5 is the same recent model generation as sonnet-5 above, which DOES
+# reject byllm's default temperature - if this 500s on a real call, swap the
+# model_name to "claude-3-haiku-20240307" (an older generation confirmed not
+# to have this deprecation) rather than re-investigating from scratch.
+glob classifier_llm: Model | MockLLM = Model(model_name="claude-haiku-4-5");
+
 
 # --- Patient context --------------------------------------------------------
 # The patient's case file - a single markdown document (bill, income, insurance,
@@ -69,7 +79,7 @@ sem RepIntent.NEEDS_ESCALATION = "The rep says they personally can't approve thi
 sem RepIntent.ACCEPTED = "The rep agrees to and confirms a concrete financial-assistance arrangement (discount, charity care, or payment plan).";
 sem RepIntent.HARD_NO = "The rep firmly and finally states no assistance programs exist or will be offered.";
 
-def classify_response(response: str) -> RepIntent by llm();
+def classify_response(response: str) -> RepIntent by classifier_llm();
 sem classify_response = "Classify a hospital billing rep's most recent spoken line, during a patient's call negotiating financial assistance, into the intent that best matches what the rep just said.";
 sem classify_response.response = "The rep's most recent spoken line in the call.";
 
@@ -247,9 +257,12 @@ test "every tactic node wires all five rep intents" {
 
 test "rep agrees immediately and the call reaches a deal" {
     global llm;
+    global classifier_llm;
     llm = MockLLM(model_name="mockllm", config={"outputs": [
         "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
-        "Sure, let me get that set up for you right now.",
+        "Sure, let me get that set up for you right now."
+    ]});
+    classifier_llm = MockLLM(model_name="mockllm", config={"outputs": [
         RepIntent.ACCEPTED
     ]});
 
@@ -263,9 +276,12 @@ test "rep agrees immediately and the call reaches a deal" {
 
 test "a firm hard no from the rep leads to a dead end" {
     global llm;
+    global classifier_llm;
     llm = MockLLM(model_name="mockllm", config={"outputs": [
         "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
-        "No, we don't offer anything like that, sorry.",
+        "No, we don't offer anything like that, sorry."
+    ]});
+    classifier_llm = MockLLM(model_name="mockllm", config={"outputs": [
         RepIntent.HARD_NO
     ]});
 
@@ -278,12 +294,15 @@ test "a firm hard no from the rep leads to a dead end" {
 
 test "escalation followed by acceptance still reaches a deal" {
     global llm;
+    global classifier_llm;
     llm = MockLLM(model_name="mockllm", config={"outputs": [
         "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
         "I can't approve that myself, you'd need to talk to my supervisor.",
-        RepIntent.NEEDS_ESCALATION,
         "Let me see what my supervisor can authorize for a hardship adjustment.",
-        "Okay, my supervisor approved an interest-free payment plan for you.",
+        "Okay, my supervisor approved an interest-free payment plan for you."
+    ]});
+    classifier_llm = MockLLM(model_name="mockllm", config={"outputs": [
+        RepIntent.NEEDS_ESCALATION,
         RepIntent.ACCEPTED
     ]});
 

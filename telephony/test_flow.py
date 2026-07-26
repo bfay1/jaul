@@ -11,8 +11,8 @@ from telephony.transport import TurnBasedTransport
 import agent
 
 
-def _run(outputs, rep_lines):
-    core.use_mock_llm(outputs)
+def _run(dialogue_outputs, classify_outputs, rep_lines):
+    core.use_mock_llm(dialogue_outputs, classify_outputs)
     session = core.NegotiationSession()
     line, status = session.start()
     for rep in rep_lines:
@@ -24,10 +24,12 @@ def _run(outputs, rep_lines):
 
 def test_deal_via_escalation():
     session = _run(
-        outputs=[
+        dialogue_outputs=[
             "Hi, are there any financial assistance programs I might qualify for?",
-            agent.RepIntent.NEEDS_ESCALATION,
             "Could I speak with a supervisor about a hardship adjustment?",
+        ],
+        classify_outputs=[
+            agent.RepIntent.NEEDS_ESCALATION,
             agent.RepIntent.ACCEPTED,
         ],
         rep_lines=[
@@ -46,12 +48,14 @@ def test_repeated_soft_no_climbs_to_escalation():
     # exchange -- the single most likely one on a real call -- dead-ended after
     # two turns via the walker's graceful-exit fallback.
     session = _run(
-        outputs=[
+        dialogue_outputs=[
             "Hi, are there any financial assistance programs I might qualify for?",
-            agent.RepIntent.SOFT_NO,       # opening -> CounterOffer
             "Could we set up an interest-free payment plan instead?",
-            agent.RepIntent.SOFT_NO,       # CounterOffer -> Escalation
             "Could I speak with a supervisor about a hardship adjustment?",
+        ],
+        classify_outputs=[
+            agent.RepIntent.SOFT_NO,       # opening -> CounterOffer
+            agent.RepIntent.SOFT_NO,       # CounterOffer -> Escalation
         ],
         rep_lines=["Maybe, I'm not sure.", "Hmm, I really can't say."],
     )
@@ -62,8 +66,10 @@ def test_repeated_soft_no_climbs_to_escalation():
 def test_hard_no_still_ends_the_call():
     # The graceful exit must still fire when the rep genuinely refuses.
     session = _run(
-        outputs=[
+        dialogue_outputs=[
             "Hi, are there any financial assistance programs I might qualify for?",
+        ],
+        classify_outputs=[
             agent.RepIntent.HARD_NO,
         ],
         rep_lines=["No, we don't offer anything like that."],
