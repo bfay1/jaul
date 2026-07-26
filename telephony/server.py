@@ -67,7 +67,7 @@ def _render(request: Request, line: str, status: str) -> tuple[str, str]:
 async def twiml_start(request: Request) -> Response:
     form = await request.form()
     call_sid = form.get("CallSid", "demo")
-    session = NegotiationSession(call_id=call_sid)
+    session = NegotiationSession()
     _sessions[call_sid] = session
     line, status = session.start()
     ctype, body = _render(request, line, status)
@@ -83,7 +83,7 @@ async def twiml_turn(request: Request) -> Response:
 
     if session is None:
         # Unknown call (e.g. server restarted mid-call): start a fresh one.
-        session = NegotiationSession(call_id=call_sid)
+        session = NegotiationSession()
         _sessions[call_sid] = session
         line, status = session.start()
     elif not speech:

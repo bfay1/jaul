@@ -9,3 +9,7 @@ __pycache__/
 # self-play loop, and live call logs may contain call content.
 exemplars.json
 live_calls.jsonl
+
+# Generated per-run by main.jac (Upgrade 2 visualization) - not source.
+call_graph.dot
+call_graph.svg

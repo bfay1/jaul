@@ -1,18 +1,22 @@
 """The negotiation engine: LLM-backed intelligence + the traversing walker.
 
 This module owns the *behavior* - how the agent decides what to say, how it
-reads the rep's reply, and how the walker moves across the tactic graph
-defined in `graph.jac`. The MockLLM tests live here too, because they swap
-this module's `glob llm` and exercise the same functions.
+reads the rep's reply, how it picks its next tactic, and how the walker
+builds and moves across the tactic graph defined in `graph.jac`. The graph is
+NOT pre-wired: each walker creates the next node and edge live, per turn, as
+it decides what to do - the traversal and the graph's shape are the same
+live decision. The MockLLM tests live here too, because they swap this
+module's `glob llm` and exercise the same functions.
 """
 
 import from byllm.lib { Model, MockLLM }
 import from graph {
-    Tactic, Opening, CounterOffer, Escalation, DealReached, DeadEnd,
-    SoftNo, Stonewalling, NeedsEscalation, Accepted, HardNo,
-    CallRecord, get_or_build_call_graph
+    Tactic, Opening, TacticStep, DealReached, DeadEnd, ProgramKnowledge,
+    Hospital,
+    SoftNo, Stonewalling, NeedsEscalation, Accepted, HardNo, HadCall,
+    start_call, program_context, seed_program_knowledge,
+    get_or_create_hospital, summarize_experience, record_call_outcome
 }
-import from fap { assistance_context }
 
 # --- Model config ------------------------------------------------------------
 # Auth comes from the ANTHROPIC_API_KEY env var (see .env / .env.example) -
@@ -21,23 +25,9 @@ import from fap { assistance_context }
 #
 # Model choice is constrained by byllm 0.6.19: it always sends a `temperature`
 # on the call, and claude-sonnet-5 rejects that outright ("`temperature` is
-# deprecated for this model"), which 500s every live turn. sonnet-4-6 and
-# haiku-4-5 both accept it (verified). Revisit if byllm is ever upgraded.
-#
-# `llm` powers generation - the function we're optimizing, so it stays fixed
-# across A/B arms. `fast` powers classification and the simulated rep: those
-# run thousands of times, and a *different model* for the rep matters beyond
-# cost. An overly-agreeable simulator inflates apparent success, and a rep
-# played by the same model as the agent tends to find its own twin's lines
-# persuasive - both make the mined exemplars look better than they are.
+# deprecated for this model"), which 500s every live turn. sonnet-4-6 still
+# accepts it. Revisit if byllm is ever upgraded.
 glob llm: Model | MockLLM = Model(model_name="claude-sonnet-4-6");
-glob fast: Model | MockLLM = Model(model_name="claude-haiku-4-5");
-
-# Exemplar side-channel. `incl_info` re-evaluates this dict on EVERY call, so
-# the walker can swap in the current node's exemplars immediately before
-# generating. This deliberately keeps exemplars OUT of `generate_line`'s
-# signature.
-glob exemplar_ctx: dict = {};
 
 
 # --- Patient context --------------------------------------------------------
@@ -46,18 +36,28 @@ glob exemplar_ctx: dict = {};
 # `name` is a short label pulled from its heading. An `obj` (not a node) because
 # it's the LLM boundary: `by llm()` takes objs, and storage can evolve apart.
 # The case file is loaded from disk by casefile.py (CLI `--case`) or telephony.
-#
-# This is a freeform-narrative complement to the structured 501(r) grounding
-# below (annual_income/household_size/bill_amount/hospital_key on the walker) -
-# the two can be used together or independently.
 
 obj PatientCase {
     has name: str = "the patient";
     has notes: str = "";
+
+    # A METHOD, not a free function taking PatientCase as a parameter. This
+    # matters: byllm 0.6.19's compile-time param extraction silently drops an
+    # obj-typed parameter from its internal params list while the runtime args
+    # dict still has it, crashing every call with an IndexError deep in
+    # byllm's prompt builder. Method-level `by llm()` sidesteps this entirely
+    # and is byllm's own documented idiom - the object's `has` fields (name,
+    # notes) are automatically included as context, no explicit passing
+    # needed. Verified working via a minimal repro before adopting this.
+    def generate_line(tactic_label: str, transcript: list[str], programs: list[str]) -> str by llm();
 }
 sem PatientCase = "The case file for the patient the agent is advocating for.";
 sem PatientCase.name = "A short name/label for the patient, for display.";
 sem PatientCase.notes = "The full case file (markdown): the patient's financial situation, insurance, bill, hardship, and goals. Ground every ask in these specifics.";
+sem PatientCase.generate_line = "You are a calm, persistent patient advocate on a phone call with a hospital billing department, calling on behalf of the patient described by your name and notes. Introduce yourself only as calling on behalf of that patient by name (e.g. \"I'm calling on behalf of Jordan Rivera\") - you have no name of your own, so NEVER invent, state, or use a placeholder name (such as 'Agent Name' or similar) for yourself. Ground every ask in the case's specifics - income relative to the federal poverty level, the bill amount, insurance status, nonprofit 501(r) obligations, and hardship - to argue for income-based discounts, charity care, and interest-free payment plans they may qualify for, without being pushy. When the tactic phase calls for citing a specific real program (e.g. CITE_501R), name the actual rule or citation from the given program facts rather than speaking generically. Given the current tactic phase, the transcript so far, and the real program facts available, draft the agent's single next spoken line - polite, concise, specific to this patient, and fitting the phase.";
+sem PatientCase.generate_line.tactic_label = "The current negotiation phase: 'opening' (first ask about assistance programs), or the name of the tactic move just chosen - 'ASK_ASSISTANCE' (reiterating the ask), 'OFFER_INCOME_DISCOUNT' (proposing an income-based discount), 'REQUEST_CHARITY_CARE' (asking about charity care eligibility), 'PROPOSE_PAYMENT_PLAN' (proposing an interest-free payment plan), 'CITE_501R' (invoking the hospital's IRS 501(r) financial assistance policy obligations), or 'ESCALATE' (asking to speak with a supervisor).";
+sem PatientCase.generate_line.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines.";
+sem PatientCase.generate_line.programs = "Real financial-assistance program facts (name, eligibility, and legal/policy citation) the agent can draw on and cite by name - especially for the CITE_501R tactic.";
 
 """A built-in default case - used for tests and as the walkers' default when no
 case file is supplied. Mirrors cases/jordan-rivera.md in brief."""
@@ -70,10 +70,10 @@ def demo_case() -> PatientCase {
 
 
 # --- LLM-backed intelligence -------------------------------------------------
-# Classification, dialogue generation, and the mock vendor-rep are each
-# powered by `by llm()`. `sem` strings (not docstrings) tell the LLM what
-# each piece means - docstrings inside a `by llm()` body are a parse error
-# anyway, since `by llm()` replaces the body entirely.
+# Classification, tactic choice, dialogue generation, and the mock vendor-rep
+# are each powered by `by llm()`. `sem` strings (not docstrings) tell the LLM
+# what each piece means - docstrings inside a `by llm()` body are a parse
+# error anyway, since `by llm()` replaces the body entirely.
 
 enum RepIntent {
     SOFT_NO,
@@ -86,86 +86,97 @@ sem RepIntent.SOFT_NO = "The rep gave a vague, noncommittal, or deflecting reply
 sem RepIntent.STONEWALLING = "The rep won't offer anything more at their level and is not budging, but hasn't issued a firm final no.";
 sem RepIntent.NEEDS_ESCALATION = "The rep says they personally can't approve this and a supervisor or specialist must get involved.";
 sem RepIntent.ACCEPTED = "The rep agrees to and confirms a concrete financial-assistance arrangement (discount, charity care, or payment plan).";
-sem RepIntent.HARD_NO = "The rep issues a firm, final, authoritative refusal - the matter is closed and there is nothing further to pursue. This is rare. A rep who merely says they are unaware of a program, who denies it without the authority to decide, who suggests calling another department, or who says no to one specific request while the conversation continues, is NOT a hard no - that is SOFT_NO or STONEWALLING.";
+sem RepIntent.HARD_NO = "The rep firmly and finally states no assistance programs exist or will be offered.";
 
-# Maps each intent to the typed edge it takes. Edge-type filters accept a
-# runtime variable, so this table replaces five near-identical if/elif arms in
-# each walker - the transition really is a lookup, not a branch.
-glob EDGE_FOR: dict = {
-    RepIntent.SOFT_NO: SoftNo,
-    RepIntent.STONEWALLING: Stonewalling,
-    RepIntent.NEEDS_ESCALATION: NeedsEscalation,
-    RepIntent.ACCEPTED: Accepted,
-    RepIntent.HARD_NO: HardNo
-};
+# The tactic the agent chooses to try next. RepIntent remains the SOLE
+# authority on whether the call is over (ACCEPTED/HARD_NO short-circuit to
+# DealReached/DeadEnd without ever calling choose_next_tactic) - there is no
+# ACCEPT_DEAL/WALK_AWAY move here, deliberately, so there is never a case
+# where the classifier and the tactic-chooser could disagree about whether
+# the negotiation has ended.
+enum TacticMove {
+    ASK_ASSISTANCE,
+    OFFER_INCOME_DISCOUNT,
+    REQUEST_CHARITY_CARE,
+    PROPOSE_PAYMENT_PLAN,
+    CITE_501R,
+    ESCALATE
+}
+sem TacticMove.ASK_ASSISTANCE = "Reiterate or clarify the ask about income-based financial assistance programs.";
+sem TacticMove.OFFER_INCOME_DISCOUNT = "Propose a specific income-based discount on the bill.";
+sem TacticMove.REQUEST_CHARITY_CARE = "Ask whether the patient qualifies for charity care - free or deeply discounted care.";
+sem TacticMove.PROPOSE_PAYMENT_PLAN = "Propose an interest-free payment plan for the remaining balance.";
+sem TacticMove.CITE_501R = "Invoke the hospital's IRS 501(r) financial assistance policy obligations, if it is a nonprofit hospital.";
+sem TacticMove.ESCALATE = "Ask to speak with a supervisor or specialist who can approve more than the current rep can.";
 
-def classify_response(response: str) -> RepIntent by fast();
-sem classify_response = "Classify a hospital billing rep's most recent spoken line, during a patient's call negotiating financial assistance, into the intent that best matches what the rep just said. Warmth is not agreement: a friendly reply that promises no specific arrangement is SOFT_NO, not ACCEPTED.";
+def classify_response(response: str) -> RepIntent by llm();
+sem classify_response = "Classify a hospital billing rep's most recent spoken line, during a patient's call negotiating financial assistance, into the intent that best matches what the rep just said.";
 sem classify_response.response = "The rep's most recent spoken line in the call.";
 
+def choose_next_tactic(transcript: list[str], last_intent: RepIntent, programs: list[str], prior_experience: str) -> TacticMove by llm();
+sem choose_next_tactic = "Decide the patient advocate's next negotiation tactic during a call with a hospital billing department, given how the rep just responded, the transcript so far, the real assistance programs available, and what has worked against this same hospital in prior calls. Pick the single move most likely to advance toward a concrete financial-assistance arrangement, without repeating a tactic that visibly isn't working. Prefer CITE_501R when the available program facts include a nonprofit-hospital obligation that's directly relevant and hasn't been raised yet. When prior experience shows a tactic that has worked against this hospital before, prefer trying it earlier.";
+sem choose_next_tactic.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines.";
+sem choose_next_tactic.last_intent = "How the rep's most recent reply was just classified - what prompted this decision.";
+sem choose_next_tactic.programs = "Real financial-assistance program facts (name, eligibility, and legal/policy citation) available to ground this choice - e.g. whether a 501(r) obligation or charity-care threshold applies.";
+sem choose_next_tactic.prior_experience = "A summary of prior call outcomes against this same hospital, if any - which tactics led to a deal versus a dead end.";
 
-# --- The commitment gate -----------------------------------------------------
-# A rep who says "absolutely, I'll make a note of that" sounds like a yes and
-# commits to nothing. Sentiment alone must never close a call, so ACCEPTED is
-# only honored when concrete terms actually parse out of the rep's line.
+def rep_reply(transcript: list[str]) -> str by llm();
+sem rep_reply = "You are playing a realistic, moderately resistant hospital billing department representative on a phone call. Respond naturally and briefly to the agent's most recent line, staying consistent with everything said earlier in the call. Be a believable mix of vague deflection, protectiveness about what you're allowed to approve, occasional willingness to loop in a supervisor, and only rarely an immediate yes.";
+sem rep_reply.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines. Reply as the REP's next line only.";
 
-obj Commitment {
-    has is_firm: bool = False;
-    has amount: str = "";
-    has term_months: int = 0;
-    has interest_rate: str = "";
-    has summary: str = "";
+
+# --- Graph-building helpers --------------------------------------------------
+# Shared by both walkers below. Live here (not graph.jac) because they need
+# RepIntent/TacticMove at runtime, and graph.jac stays LLM/decision-free.
+
+"""Create the next TacticStep for a continuing intent (SOFT_NO/STONEWALLING/
+NEEDS_ESCALATION), connect it from `current` via the matching typed edge, and
+return it. Edge-type creation is compile-time-literal (`+>:E():+>`), hence the
+ladder rather than a single parameterized call - confirmed via a scratch check
+before writing this."""
+def advance_tactic(current: Tactic, intent: RepIntent, move: TacticMove) -> TacticStep {
+    move_name: str = move.name;
+    new_step: TacticStep = TacticStep(label=move_name, move=move_name);
+    if intent == RepIntent.SOFT_NO {
+        current +>:SoftNo():+> new_step;
+    } elif intent == RepIntent.STONEWALLING {
+        current +>:Stonewalling():+> new_step;
+    } else {
+        current +>:NeedsEscalation():+> new_step;
+    }
+    return new_step;
 }
-sem Commitment.is_firm = "True only if the rep committed to a specific, verifiable arrangement the patient could hold them to. Vague goodwill, 'I'll note it', 'we can look into that', or a promise to call back are all False.";
-sem Commitment.amount = "The dollar amount or percentage discount agreed, verbatim, or empty if none was stated.";
-sem Commitment.term_months = "Length of the payment plan in months, or 0 if not stated.";
-sem Commitment.interest_rate = "The stated interest rate or APR, verbatim. Empty if none was stated. Note 'interest-free' or '0%' explicitly if said.";
-sem Commitment.summary = "One short sentence stating what was actually agreed, or why it does not count as a commitment.";
 
-def extract_commitment(response: str) -> Commitment by fast();
-sem extract_commitment = "Read a hospital billing rep's spoken line and extract any concrete financial arrangement they committed to. Be strict: only report is_firm when specific terms were actually stated.";
-sem extract_commitment.response = "The rep's most recent spoken line in the call.";
+"""Create the terminal node for ACCEPTED/HARD_NO, connect it from `current`,
+and return it. The only place a call can end - RepIntent is the sole
+authority on this, never TacticMove."""
+def reach_terminal(current: Tactic, intent: RepIntent) -> Tactic {
+    if intent == RepIntent.ACCEPTED {
+        deal: DealReached = DealReached(label="deal_reached");
+        current +>:Accepted():+> deal;
+        return deal;
+    }
+    dead: DeadEnd = DeadEnd(label="dead_end");
+    current +>:HardNo():+> dead;
+    return dead;
+}
 
-
-def generate_line(patient_case: PatientCase, tactic_label: str, transcript: list[str]) -> str by llm(incl_info=exemplar_ctx);
-sem generate_line = "You are a calm, persistent patient advocate on a phone call with a hospital billing department, calling on behalf of the patient described in the case file. Introduce yourself only as calling on behalf of that patient by name (e.g. \"I'm calling on behalf of Jordan Rivera\") - you have no name of your own, so NEVER invent, state, or use a placeholder name (such as 'Agent Name' or similar) for yourself. Ground every ask in the case's specifics - income relative to the federal poverty level, the bill amount, insurance status, nonprofit 501(r) obligations, and hardship - to argue for income-based discounts, charity care, and interest-free payment plans they may qualify for, without being pushy. When additional assistance facts are supplied (a computed poverty-level percentage, the hospital's own published threshold, or named programs), cite them specifically too - a precise, checkable claim is far harder to deflect than a general question. Never state a figure that was not supplied to you in either the case file or the assistance facts, and never overstate the patient's hardship. Given the case file, the current tactic phase, and the transcript so far, draft the agent's single next spoken line - polite, concise, specific to this patient, and fitting the phase.";
-sem generate_line.patient_case = "The patient's case file - the facts to argue from.";
-sem generate_line.tactic_label = "The current negotiation phase: 'opening' (first ask about assistance programs), 'counter_offer' (proposing a specific discount or payment plan), or 'escalation' (asking for a supervisor).";
-sem generate_line.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines.";
-
-# NOTE - byllm 0.6.19 bug, verified: a second parameter on distill_playbook is
-# silently dropped from byllm's compile-time param map, so the call then dies
-# with `IndexError: list index out of range` inside MTRuntime.factory. It is
-# not the parameter name, the sem text, or which model glob is used - and the
-# identical file under any other module name registers both params correctly.
-# `generate_line` above takes three parameters and is unaffected (verified live
-# in production) - the bug is specific to distill_playbook's shape, not a
-# general "more than N params" ceiling.
-#
-# So the persona rides in as the first transcript entry instead. Before adding
-# a parameter to any `by llm()` function in this module, check it registered:
-#   python -c "import jaclang; from jaclang.jac0core.runtime import JacRuntime as J; \
-#              import agent; print([p.name for p in J.get_mtir_from_map('agent.<fn>').params])"
-"""Distil what worked at one tactic into transferable rules.
-
-Injecting the winning lines verbatim failed: they carried other patients'
-figures ("118% of the federal poverty level"), one call's plan terms
-("$93.33 per month"), and unfilled placeholders ("[Patient Name]") into calls
-they had nothing to do with. Rules cannot carry any of that, and the caller
-rejects any rule that does - see `clean_rule` in sim.jac.
-
-The losing lines matter as much as the winning ones: without them this is a
-model summarising its own highlight reel.
-"""
-def distill_playbook(tactic: str, winning: list[str], losing: list[str]) -> list[str] by llm();
-sem distill_playbook = "You are analysing a negotiation agent's phone calls with hospital billing departments to write it a short playbook. Compare lines that moved the representative toward agreement against lines that did not, and write 3 tactics the agent should follow at this stage of the call. Each tactic must name a concrete action and when to take it - not a sentiment. Write them so they apply to ANY patient and ANY hospital: never include a specific number, percentage, dollar amount, name, or bracketed placeholder, because the figures in these examples belong to other patients and would be wrong for the next call. Prefer a tactic you can see actually caused the representative to move. Keep each tactic under 50 words and state it as a plain instruction - do not number or label them.";
-sem distill_playbook.tactic = "The stage of the call: 'opening' (first ask about assistance), 'counter_offer' (proposing something specific), or 'escalation' (asking for someone with authority).";
-sem distill_playbook.winning = "Agent lines that measurably moved the representative toward agreement.";
-sem distill_playbook.losing = "Agent lines from calls that ended without an arrangement.";
-
-def rep_reply(transcript: list[str]) -> str by fast();
-sem rep_reply = "You are playing a hospital billing department representative on a phone call. The first transcript entry, prefixed 'PERSONA:', describes exactly who you are - your authority to approve things, what you know about the hospital's assistance programs, your disposition, how closely you stick to a script, and how much you want the call to end. Follow it for the entire call. Respond naturally and briefly to the agent's most recent line, staying consistent with everything said earlier. Stay in character even when the agent is persuasive - do not become helpful just because they were polite.";
-sem rep_reply.transcript = "The call so far. The first entry is 'PERSONA: ...' describing the rep you are playing; the rest are alternating 'AGENT: ...' and 'REP: ...' lines. Reply as the REP's next line only.";
+"""Read which tactic move led to a just-reached terminal node (DealReached or
+DeadEnd), for outcome recording. "opening" means the call ended on the very
+first turn, before any tactic move was ever chosen. Reads the incoming edge
+rather than tracking a walker field across the visit - works identically for
+NegotiationAgent's single spawn and NegotiationTurn's fresh-spawn-per-turn."""
+def move_leading_to(terminal: Tactic) -> str {
+    predecessors = [terminal <--];
+    if len(predecessors) == 0 {
+        return "opening";
+    }
+    prior = predecessors[0];
+    if isinstance(prior, TacticStep) {
+        return prior.move;
+    }
+    return "opening";
+}
 
 
 # --- The walker: the negotiation engine -------------------------------------
@@ -176,152 +187,52 @@ walker NegotiationAgent {
     has turns: int = 0;
     has max_turns: int = 6;
     has patient: PatientCase = demo_case();
+    has hospital: Hospital | None = None;
 
-    # Simulation metadata - what this call was run against, and which A/B arm
-    # it belongs to. Empty on a live call.
-    has persona: str = "";
-    has profile: str = "";
-    has arm: str = "";
-    has call_id: str = "";
-
-    # Trajectory, captured for mining. `agent_lines` and `edge_path` are index-
-    # aligned: line i was spoken, and edge_path[i] is what the rep's reply to
-    # it classified as. That alignment is what makes per-line credit possible.
-    has agent_lines: list[str] = [];
-    has tactic_path: list[str] = [];
-    has edge_path: list[str] = [];
-    has deal_terms: str = "";
-    has record_call: bool = True;
-
-    # Structured 501(r) grounding facts, orthogonal to `patient` above:
-    # `patient` is freeform narrative context; these are precise, computed
-    # numbers (real poverty-level percentage, hospital-specific policy quotes)
-    # when a hospital in data/fap_corpus.json and household details are known.
-    # Deliberately inert until `household_size` is set - both mechanisms can be
-    # used together or independently.
-    has annual_income: float = 0.0;
-    has household_size: int = 0;
-    has bill_amount: float = 0.0;
-    has hospital_key: str = "";
-    has state: str = "";
-
-    can negotiate with Opening | CounterOffer | Escalation entry {
+    can negotiate with Opening | TacticStep entry {
         self.turns += 1;
         if self.turns > self.max_turns {
-            # `disengage` inside finish() stops the traversal but does NOT
-            # unwind this ability, so return explicitly or we fall through and
-            # burn another generation turn.
-            self.finish(here, "dead_end", "hit max_turns without a resolution");
-            return;
+            self.outcome = "dead_end";
+            disengage;
         }
 
-        here.visit_count += 1;
-        self.tactic_path.append(here.label);
-
-        # Hand this node's learned exemplars to the generator. `incl_info`
-        # re-reads this dict per call, so the walker's position decides which
-        # examples the model sees - the traversal IS the retrieval.
-        exemplar_ctx["playbook"] = here.playbook;
-        exemplar_ctx["assistance"] = self.assistance_facts();
-        line = generate_line(self.patient, here.label, self.transcript);
+        programs = program_context();
+        line = self.patient.generate_line(here.label, self.transcript, programs);
         self.transcript.append("AGENT: " + line);
-        self.agent_lines.append(line);
 
-        # Persona leads the transcript we hand the simulator, but is kept out
-        # of `self.transcript` - that's the real call record.
-        response = rep_reply(["PERSONA: " + self.persona] + self.transcript);
+        response = rep_reply(self.transcript);
         self.transcript.append("REP: " + response);
 
-        intent = self.read_intent(response);
-        self.edge_path.append(intent.name);
-
-        edge_type = EDGE_FOR[intent];
-        visit [here ->:edge_type:->] else {
-            self.finish(here, "dead_end", "no " + intent.name + " edge out of " + here.label);
-        }
-    }
-
-    """Real 501(r) facts for this patient, or empty when none are supplied.
-
-    Empty is the honest default: with no household size we cannot compute a
-    poverty-level position, and the agent should ask openly rather than
-    invent a threshold.
-    """
-    def assistance_facts() -> dict {
-        if self.household_size <= 0 {
-            return {};
-        }
-        a = assistance_context(
-            self.annual_income, self.household_size,
-            self.bill_amount, self.hospital_key, self.state
-        );
-        return {
-            "fpl_percent": a.fpl_pct,
-            "poverty_line_for_household": a.poverty_line,
-            "hospital": a.hospital,
-            "eligibility": a.qualifies_hint,
-            "hardship": a.hardship_hint,
-            "policy_quote": a.quotable,
-            "programs_to_name": a.levers
-        };
-    }
-
-    """Classify the rep's line, then gate ACCEPTED behind real terms.
-
-    Warmth is not agreement. A rep who says "of course, I'll make a note of
-    that" reads as ACCEPTED to a classifier and commits to nothing, which
-    would walk us to DealReached and report a deal that never happened.
-    """
-    def read_intent(response: str) -> RepIntent {
         intent = classify_response(response);
-        if intent != RepIntent.ACCEPTED {
-            return intent;
+
+        if intent == RepIntent.ACCEPTED or intent == RepIntent.HARD_NO {
+            terminal_node = reach_terminal(here, intent);
+            visit [terminal_node];
+        } else {
+            prior_experience = "No prior calls with this hospital.";
+            if self.hospital is not None {
+                prior_experience = summarize_experience(self.hospital);
+            }
+            move = choose_next_tactic(self.transcript, intent, programs, prior_experience);
+            new_step = advance_tactic(here, intent, move);
+            visit [new_step];
         }
-        commitment = extract_commitment(response);
-        if not commitment.is_firm {
-            return RepIntent.SOFT_NO;
-        }
-        self.deal_terms = commitment.summary;
-        return intent;
     }
 
     can reach_deal with DealReached entry {
-        here.visit_count += 1;
-        self.tactic_path.append(here.label);
-        here.terms = self.deal_terms;
-        self.transcript.append("OUTCOME: deal reached - " + self.deal_terms);
-        self.finish(here, "deal_reached", self.deal_terms);
+        self.outcome = "deal_reached";
+        self.transcript.append("OUTCOME: deal reached - " + here.label);
+        if self.hospital is not None {
+            record_call_outcome(self.hospital, "deal_reached", move_leading_to(here));
+        }
+        disengage;
     }
 
     can reach_dead_end with DeadEnd entry {
-        here.visit_count += 1;
-        self.tactic_path.append(here.label);
+        self.outcome = "dead_end";
         self.transcript.append("OUTCOME: no assistance available");
-        self.finish(here, "dead_end", "rep refused outright");
-    }
-
-    """Persist the call, then stop.
-
-    Called from every terminal path rather than a `with Root exit` ability:
-    this walker is spawned directly on the opening node and never visits Root,
-    so a Root exit ability would never fire.
-    """
-    def finish(final: Tactic, outcome: str, note: str) {
-        self.outcome = outcome;
-        if self.record_call {
-            root ++> CallRecord(
-                call_id=self.call_id,
-                persona=self.persona,
-                profile=self.profile,
-                arm=self.arm,
-                transcript=self.transcript,
-                agent_lines=self.agent_lines,
-                tactic_path=self.tactic_path,
-                edge_path=self.edge_path,
-                outcome=outcome,
-                deal_terms=self.deal_terms,
-                note=note
-            );
+        if self.hospital is not None {
+            record_call_outcome(self.hospital, "dead_end", move_leading_to(here));
         }
         disengage;
     }
@@ -336,6 +247,13 @@ walker NegotiationAgent {
 # (telephony/) spawns a fresh one each webhook, on the node the last turn ended
 # on, passing in what the rep just said. The traversal logic is identical; only
 # who supplies the rep's line differs (a real human, not `rep_reply`).
+#
+# Dynamic node creation doesn't threaten the one-hop-per-spawn contract:
+# on the "have a reply" branch below, the ability constructs the target node
+# THIS INSTANT and `visit`s it - the same spawn immediately re-enters that
+# fresh node's "just arrived" branch (rep_utterance is now ""), sets
+# end_node, and disengages. Identical shape to traversing a pre-wired edge;
+# telephony/core.py needs no changes for this.
 
 walker NegotiationTurn {
     has rep_utterance: str = "";           # empty on the opening turn
@@ -344,188 +262,96 @@ walker NegotiationTurn {
     has status: str = "in_progress";       # OUT: in_progress | deal_reached | dead_end
     has end_node: Tactic | None = None;    # OUT: node to resume from next turn
     has patient: PatientCase = demo_case();
+    has hospital: Hospital | None = None;
 
-    # Trajectory, carried across webhook spawns by the caller (see
-    # telephony/core.py) and written to a CallRecord on the terminal turn.
-    has agent_lines: list[str] = [];
-    has tactic_path: list[str] = [];
-    has edge_path: list[str] = [];
-    has deal_terms: str = "";
-    has call_id: str = "";
-
-    can step with Opening | CounterOffer | Escalation entry {
+    can step with Opening | TacticStep entry {
         # No rep utterance yet => we just arrived at this tactic (either the
         # call's opening, or a hop taken this same spawn). Speak its line and
         # stop, leaving `end_node` here for the next webhook to resume from.
         if self.rep_utterance == "" {
-            here.visit_count += 1;
-            self.tactic_path.append(here.label);
-            exemplar_ctx["playbook"] = here.playbook;
-            self.agent_line = generate_line(self.patient, here.label, self.transcript);
+            programs = program_context();
+            self.agent_line = self.patient.generate_line(here.label, self.transcript, programs);
             self.transcript.append("AGENT: " + self.agent_line);
-            self.agent_lines.append(self.agent_line);
             self.end_node = here;
             disengage;
         }
 
         # We have the rep's reply to the line we spoke last turn: classify it,
-        # then traverse exactly one typed edge. Clearing rep_utterance means the
-        # node we land on takes the branch above and generates the next line.
+        # then build and traverse exactly one typed edge to a fresh node.
+        # Clearing rep_utterance means the node we land on takes the branch
+        # above and generates the next line.
         self.transcript.append("REP: " + self.rep_utterance);
         intent = classify_response(self.rep_utterance);
-
-        # Same commitment gate as NegotiationAgent: a warm non-answer must not
-        # be allowed to close a live call.
-        if intent == RepIntent.ACCEPTED {
-            commitment = extract_commitment(self.rep_utterance);
-            if commitment.is_firm {
-                self.deal_terms = commitment.summary;
-            } else {
-                intent = RepIntent.SOFT_NO;
-            }
-        }
-        self.edge_path.append(intent.name);
         self.rep_utterance = "";
 
-        edge_type = EDGE_FOR[intent];
-        visit [here ->:edge_type:->] else { self.dead_end(here); }
+        if intent == RepIntent.ACCEPTED or intent == RepIntent.HARD_NO {
+            terminal_node = reach_terminal(here, intent);
+            visit [terminal_node];
+        } else {
+            prior_experience = "No prior calls with this hospital.";
+            if self.hospital is not None {
+                prior_experience = summarize_experience(self.hospital);
+            }
+            move = choose_next_tactic(self.transcript, intent, program_context(), prior_experience);
+            new_step = advance_tactic(here, intent, move);
+            visit [new_step];
+        }
     }
 
     can arrive_deal with DealReached entry {
-        here.visit_count += 1;
-        self.tactic_path.append(here.label);
-        here.terms = self.deal_terms;
+        self.status = "deal_reached";
         self.agent_line = "Wonderful - thank you so much, that's a real help. Have a great day.";
         self.transcript.append("AGENT: " + self.agent_line);
         self.end_node = here;
-        self.finish("deal_reached", self.deal_terms);
+        if self.hospital is not None {
+            record_call_outcome(self.hospital, "deal_reached", move_leading_to(here));
+        }
+        disengage;
     }
 
     can arrive_dead_end with DeadEnd entry {
-        here.visit_count += 1;
-        self.tactic_path.append(here.label);
+        self.status = "dead_end";
         self.agent_line = "I understand - thank you for taking the time to look into it for me.";
         self.transcript.append("AGENT: " + self.agent_line);
         self.end_node = here;
-        self.finish("dead_end", "rep refused outright");
-    }
-
-    def dead_end(stuck: Tactic) {
-        # No typed edge out for this classification: end the call gracefully
-        # rather than crash. Stays on the current node.
-        self.agent_line = "I understand - thank you for taking the time to look into it for me.";
-        self.transcript.append("AGENT: " + self.agent_line);
-        self.end_node = stuck;
-        self.finish("dead_end", "no edge out of " + stuck.label);
-    }
-
-    """Persist the completed live call, then stop."""
-    def finish(outcome: str, note: str) {
-        self.status = outcome;
-        root ++> CallRecord(
-            call_id=self.call_id,
-            persona="live",
-            arm="live",
-            transcript=self.transcript,
-            agent_lines=self.agent_lines,
-            tactic_path=self.tactic_path,
-            edge_path=self.edge_path,
-            outcome=outcome,
-            deal_terms=self.deal_terms,
-            note=note
-        );
+        if self.hospital is not None {
+            record_call_outcome(self.hospital, "dead_end", move_leading_to(here));
+        }
         disengage;
     }
 }
 
 
 # --- Tests (MockLLM - no API key or network needed) --------------------------
-# Two mock queues, because generation and classification now run on different
-# models. Consumption order per turn is: generate_line (llm), then rep_reply,
-# classify_response, and - only when ACCEPTED - extract_commitment (all fast).
-#
-# The tactic graph is canonical and persisted, so these tests share nodes and
-# accumulate CallRecords. Assert on a unique call_id, never on totals.
 
-glob OPENER: str = "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?";
-
-test "the tactic graph is canonical across calls" {
-    # If this fails, exemplar banks are inert: a line written onto a node in
-    # one call would be invisible to the next.
-    first = get_or_build_call_graph();
-    second = get_or_build_call_graph();
-    assert first == second;
-    assert len([root -->[?:Opening]]) == 1;
-}
-
-test "every tactic node wires all five rep intents" {
-    # A tactic missing an edge does not error - the walker's `visit ... else`
-    # fallback quietly reports dead_end, so the call just stops. This guard
-    # makes that failure loud instead of invisible.
-    opening = get_or_build_call_graph();
-    counter = [opening ->:SoftNo:->][0];
-    escalation = [opening ->:NeedsEscalation:->][0];
-
-    for tactic in [opening, counter, escalation] {
-        assert len([tactic ->:SoftNo:->]) > 0;
-        assert len([tactic ->:Stonewalling:->]) > 0;
-        assert len([tactic ->:NeedsEscalation:->]) > 0;
-        assert len([tactic ->:Accepted:->]) > 0;
-        assert len([tactic ->:HardNo:->]) > 0;
-    }
-}
-
-test "rep agrees with concrete terms and the call reaches a deal" {
+test "rep agrees immediately and the call reaches a deal" {
     global llm;
-    global fast;
-    llm = MockLLM(model_name="mockllm", config={"outputs": [OPENER]});
-    fast = MockLLM(model_name="mockllm", config={"outputs": [
-        "Sure - I can do 40% off, spread over 12 months, no interest.",
-        RepIntent.ACCEPTED,
-        Commitment(is_firm=True, amount="40%", term_months=12,
-                   interest_rate="0%", summary="40% discount over 12 months, interest-free")
+    llm = MockLLM(model_name="mockllm", config={"outputs": [
+        "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
+        "Sure, let me get that set up for you right now.",
+        RepIntent.ACCEPTED
     ]});
 
-    opening = get_or_build_call_graph();
-    result = opening spawn NegotiationAgent(record_call=False);
+    hospital = get_or_create_hospital("Test Hospital - immediate accept");
+    opening = start_call(hospital);
+    result = opening spawn NegotiationAgent(hospital=hospital);
 
     assert result.outcome == "deal_reached";
-    assert result.deal_terms == "40% discount over 12 months, interest-free";
-    assert result.edge_path == ["ACCEPTED"];
-}
-
-test "a warm non-commitment does NOT close the call" {
-    # The False Yes failure mode: the rep sounds like a yes and commits to
-    # nothing. Sentiment alone must never walk us to DealReached.
-    global llm;
-    global fast;
-    llm = MockLLM(model_name="mockllm", config={"outputs": [OPENER]});
-    fast = MockLLM(model_name="mockllm", config={"outputs": [
-        "Of course, I'll make a note of that on your account.",
-        RepIntent.ACCEPTED,
-        Commitment(is_firm=False, summary="Only promised to note it; no terms stated")
-    ]});
-
-    opening = get_or_build_call_graph();
-    result = opening spawn NegotiationAgent(max_turns=1, record_call=False);
-
-    # Classified ACCEPTED, downgraded to SOFT_NO by the commitment gate.
-    assert result.edge_path == ["SOFT_NO"];
-    assert result.outcome == "dead_end";
-    assert result.deal_terms == "";
+    assert len(result.transcript) >= 3;
+    assert "OUTCOME: deal reached" in result.transcript[-1];
 }
 
 test "a firm hard no from the rep leads to a dead end" {
     global llm;
-    global fast;
-    llm = MockLLM(model_name="mockllm", config={"outputs": [OPENER]});
-    fast = MockLLM(model_name="mockllm", config={"outputs": [
+    llm = MockLLM(model_name="mockllm", config={"outputs": [
+        "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
         "No, we don't offer anything like that, sorry.",
         RepIntent.HARD_NO
     ]});
 
-    opening = get_or_build_call_graph();
-    result = opening spawn NegotiationAgent(record_call=False);
+    hospital = get_or_create_hospital("Test Hospital - hard no");
+    opening = start_call(hospital);
+    result = opening spawn NegotiationAgent(hospital=hospital);
 
     assert result.outcome == "dead_end";
     assert result.transcript[-1] == "OUTCOME: no assistance available";
@@ -533,114 +359,71 @@ test "a firm hard no from the rep leads to a dead end" {
 
 test "escalation followed by acceptance still reaches a deal" {
     global llm;
-    global fast;
     llm = MockLLM(model_name="mockllm", config={"outputs": [
-        OPENER,
-        "Could I speak with a supervisor about a hardship adjustment?"
-    ]});
-    fast = MockLLM(model_name="mockllm", config={"outputs": [
+        "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
         "I can't approve that myself, you'd need to talk to my supervisor.",
         RepIntent.NEEDS_ESCALATION,
-        "Okay, my supervisor approved an interest-free payment plan.",
-        RepIntent.ACCEPTED,
-        Commitment(is_firm=True, term_months=24, interest_rate="0%",
-                   summary="Interest-free payment plan over 24 months")
+        TacticMove.ESCALATE,
+        "Let me see what my supervisor can authorize for a hardship adjustment.",
+        "Okay, my supervisor approved an interest-free payment plan for you.",
+        RepIntent.ACCEPTED
     ]});
 
-    opening = get_or_build_call_graph();
-    result = opening spawn NegotiationAgent(record_call=False);
+    hospital = get_or_create_hospital("Test Hospital - escalation then accept");
+    opening = start_call(hospital);
+    result = opening spawn NegotiationAgent(hospital=hospital);
 
     assert result.outcome == "deal_reached";
-    assert result.tactic_path == ["opening", "escalation", "deal_reached"];
-    assert result.edge_path == ["NEEDS_ESCALATION", "ACCEPTED"];
 }
 
-test "a completed call is persisted as a queryable CallRecord" {
+test "cross-call learning accumulates outcomes for the same hospital" {
     global llm;
-    global fast;
-    llm = MockLLM(model_name="mockllm", config={"outputs": [OPENER]});
-    fast = MockLLM(model_name="mockllm", config={"outputs": [
-        "No, we don't offer anything like that.",
+    hospital = get_or_create_hospital("Test Hospital - learning demo");
+    count_before = len([hospital ->:HadCall:->]);
+
+    llm = MockLLM(model_name="mockllm", config={"outputs": [
+        "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
+        "No, we don't offer anything like that, sorry.",
         RepIntent.HARD_NO
     ]});
+    opening1 = start_call(hospital);
+    result1 = opening1 spawn NegotiationAgent(hospital=hospital);
+    assert result1.outcome == "dead_end";
 
-    opening = get_or_build_call_graph();
-    opening spawn NegotiationAgent(
-        call_id="test-persist-001", persona="gatekeeper", profile="p1", arm="base"
-    );
+    outcomes_after_first = [hospital ->:HadCall:->];
+    assert len(outcomes_after_first) == count_before + 1;
+    assert outcomes_after_first[-1].result == "dead_end";
+    assert outcomes_after_first[-1].winning_move == "opening";
 
-    # Filter by unique id - tests share a persisted root, so totals are unsafe.
-    saved = [root -->[?:CallRecord, call_id == "test-persist-001"]];
-    assert len(saved) == 1;
-    assert saved[0].outcome == "dead_end";
-    assert saved[0].persona == "gatekeeper";
-    assert saved[0].arm == "base";
-    assert saved[0].edge_path == ["HARD_NO"];
-    assert len(saved[0].agent_lines) == 1;
-}
-
-test "real 501(r) facts reach the generator when patient details are supplied" {
-    global llm;
-    global fast;
-    llm = MockLLM(model_name="mockllm", config={"outputs": [OPENER]});
-    fast = MockLLM(model_name="mockllm", config={"outputs": ["No.", RepIntent.HARD_NO]});
-
-    opening = get_or_build_call_graph();
-    opening spawn NegotiationAgent(
-        record_call=False,
-        annual_income=48000.0, household_size=3,
-        bill_amount=9000.0, hospital_key="mass_general_brigham"
-    );
-
-    facts = exemplar_ctx["assistance"];
-    assert facts["fpl_percent"] == 176;
-    assert facts["hospital"] == "Mass General Brigham";
-    assert "60% or more" in facts["policy_quote"];
-    assert len(list(facts["programs_to_name"])) > 0;
-}
-
-test "no patient details means no invented thresholds" {
-    global llm;
-    global fast;
-    llm = MockLLM(model_name="mockllm", config={"outputs": [OPENER]});
-    fast = MockLLM(model_name="mockllm", config={"outputs": ["No.", RepIntent.HARD_NO]});
-
-    opening = get_or_build_call_graph();
-    opening spawn NegotiationAgent(record_call=False);
-
-    assert exemplar_ctx["assistance"] == {};
-}
-
-test "a node's playbook reaches the generator via incl_info" {
-    # The retrieval path: walker lands on a node, that node's playbook goes
-    # into exemplar_ctx, and the next generate_line call sees it.
-    opening = get_or_build_call_graph();
-    opening.playbook = ["RULE-ALPHA"];
-
-    global llm;
-    global fast;
-    llm = MockLLM(model_name="mockllm", config={"outputs": [OPENER]});
-    fast = MockLLM(model_name="mockllm", config={"outputs": [
-        "No.", RepIntent.HARD_NO
+    llm = MockLLM(model_name="mockllm", config={"outputs": [
+        "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
+        "Sure, let me get that set up for you right now.",
+        RepIntent.ACCEPTED
     ]});
+    opening2 = start_call(hospital);
+    result2 = opening2 spawn NegotiationAgent(hospital=hospital);
+    assert result2.outcome == "deal_reached";
 
-    opening spawn NegotiationAgent(record_call=False);
+    outcomes_after_second = [hospital ->:HadCall:->];
+    assert len(outcomes_after_second) == count_before + 2;
 
-    assert exemplar_ctx["playbook"] == ["RULE-ALPHA"];
-    opening.playbook = [];
+    experience = summarize_experience(hospital);
+    assert "deal_reached" in experience;
+    assert "dead_end" in experience;
 }
 
-test "patient case context still reaches the generator after the merge" {
-    # The one thing sft's branch never had: confirms PatientCase survived
-    # being threaded back into generate_line's signature.
-    global llm;
-    global fast;
-    llm = MockLLM(model_name="mockllm", config={"outputs": [OPENER]});
-    fast = MockLLM(model_name="mockllm", config={"outputs": ["No.", RepIntent.HARD_NO]});
+test "program knowledge seeds idempotently and flattens to non-empty strings" {
+    seed_program_knowledge();
+    count_after_first = len([root -->[?:ProgramKnowledge]]);
+    seed_program_knowledge();
+    count_after_second = len([root -->[?:ProgramKnowledge]]);
 
-    opening = get_or_build_call_graph();
-    custom = PatientCase(name="Alex Kim", notes="Uninsured, household of 1, $2,000 bill.");
-    result = opening spawn NegotiationAgent(patient=custom, record_call=False);
+    assert count_after_first > 0;
+    assert count_after_first == count_after_second;
 
-    assert result.outcome == "dead_end";
+    facts = program_context();
+    assert len(facts) == count_after_first;
+    for fact in facts {
+        assert len(fact) > 0;
+    }
 }

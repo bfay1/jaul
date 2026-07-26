@@ -1,209 +1,176 @@
-"""The negotiation tactic graph: nodes, typed edges, and how to build one.
+"""The negotiation tactic graph: nodes, typed edges, and how a call starts.
 
-This module owns the *shape* of a negotiation - the tactics, the transitions
-between them, and the per-call record we learn from. No LLM or walker logic;
-the walker that traverses this lives in `agent.jac`.
-
-The tactic graph is CANONICAL: one shared set of five nodes for every call
-ever placed. That is what makes learning possible - a winning line written
-onto `Escalation.exemplars` during call N is read by call N+1, because both
-calls traverse the same node. Minting a fresh graph per call (which this
-module used to do) makes the exemplar banks silently inert.
+This module owns the *shape* of a negotiation - the tactic node types and the
+edge types that can connect them - with no LLM or walker logic. The graph is
+NOT pre-wired: only the opening node exists when a call starts. The walker in
+`agent.jac` creates each subsequent node and edge live, per turn, as it
+decides what to do next - the graph is a trace of the call, not a map drawn in
+advance of it.
 """
+
+import from datetime { datetime }
 
 # --- Graph shape -----------------------------------------------------------
 # Every negotiation tactic is a typed node. All tactic nodes share the
-# `Tactic` base so the pre-wired transition edges below can be typed
-# `Tactic --> Tactic` instead of duplicated per concrete pair.
-#
-# `sem` on a node/edge archetype is what the graph means, expressed on the
-# graph itself rather than duplicated inside each prompt. byLLM reads these.
+# `Tactic` base so edges can be typed `Tactic --> Tactic` instead of
+# duplicated per concrete pair.
 
 node Tactic {
     has label: str;
-    # Winning lines previously spoken from this tactic. Retrieved at
-    # generation time - this list IS the learned artifact.
-    has exemplars: list[str] = [];
-    # Transferable tactics distilled from what worked at this node. Unlike raw
-    # exemplars, these carry no patient-specific figures - a rule cannot leak
-    # another patient's poverty-level percentage or plan terms into this call.
-    has playbook: list[str] = [];
-    has visit_count: int = 0;
 }
-sem Tactic = "A phase of a hospital-billing negotiation the agent can be in.";
 
 node Opening(Tactic) {}
-sem Opening = "The start of the call: introduce the request and ask, openly, what financial assistance programs exist.";
 
-node CounterOffer(Tactic) {
-    has offer_terms: str = "";
+# Every tactic after the opening is a TacticStep - created live by the walker
+# each turn, never pre-wired. `move` holds the chosen TacticMove's name (e.g.
+# "CITE_501R"); `label` (inherited from Tactic) is set to the same value, so
+# every existing `here.label` read (generate_line, printgraph, ...) keeps
+# working unchanged whether `here` is the Opening or a TacticStep.
+node TacticStep(Tactic) {
+    has move: str = "";
 }
-sem CounterOffer = "The agent proposes something specific - a percentage discount, a charity-care application, or an interest-free payment plan - rather than asking open-endedly.";
-
-node Escalation(Tactic) {}
-sem Escalation = "The agent asks to involve a supervisor or the financial-assistance department, because the current rep cannot approve what is being asked.";
 
 node DealReached(Tactic) {
     has terms: str = "";
 }
-sem DealReached = "The rep committed to a concrete, verifiable arrangement. Terminal.";
 
 node DeadEnd(Tactic) {
     has reason: str = "";
 }
-sem DeadEnd = "The call ended without an arrangement. Terminal.";
 
 # Edges are typed by what the rep just said - the transition *is* the
-# classification, not a branch in the walker's logic.
+# classification, not a branch in the walker's logic. Unchanged from before:
+# these were already RepIntent-shaped, they're just wired live now instead of
+# pre-wired in bulk.
 edge SoftNo: Tactic --> Tactic {}
-sem SoftNo = "The rep deflected: vague, noncommittal, no real progress, but not a refusal.";
-
 edge Stonewalling: Tactic --> Tactic {}
-sem Stonewalling = "The rep will not move further at their level, but has not issued a final no.";
-
 edge NeedsEscalation: Tactic --> Tactic {}
-sem NeedsEscalation = "The rep cannot personally approve this; a supervisor must get involved.";
-
 edge Accepted: Tactic --> Tactic {}
-sem Accepted = "The rep committed to a concrete arrangement, with terms specific enough to hold them to.";
-
 edge HardNo: Tactic --> Tactic {}
-sem HardNo = "The rep firmly and finally refused.";
 
 
-# --- Per-call record: the training data ------------------------------------
-# One CallRecord per call, hung off root. Every metric in the eval is a query
-# over these, and every exemplar mined in Phase 2 comes from these.
+# --- Real assistance-program facts ------------------------------------------
+# Root-anchored, seeded once, read by agent.jac and flattened to plain strings
+# before ever reaching a by llm() call - never pass these nodes themselves
+# into an LLM call (an obj/node parameter is the exact bug class that broke
+# every call before Upgrade 1's fix).
 
-node CallRecord {
-    has call_id: str = "";
-    has persona: str = "";          # which rep persona this call faced
-    has profile: str = "";          # which patient profile
-    has arm: str = "";              # "base" | "tuned" - for the A/B
-    has transcript: list[str] = [];
-    has agent_lines: list[str] = [];   # just the agent's lines, in order
-    has tactic_path: list[str] = [];   # node labels, in visit order
-    has edge_path: list[str] = [];     # edge types taken, in order
-    has outcome: str = "";             # "deal_reached" | "dead_end"
-    has deal_terms: str = "";          # parsed commitment, if any
-    has deal_quality: str = "none";    # "good" | "predatory" | "none"
-    has note: str = "";                # one-line postmortem, feeds diagnosis
+node ProgramKnowledge {
+    has name: str;
+    has eligibility: str;
+    has citation: str;
+}
+
+"""Seed the canonical assistance-program facts under root, once. Idempotent -
+safe to call on every start_call()."""
+def seed_program_knowledge() -> None {
+    if len([root -->[?:ProgramKnowledge]]) > 0 {
+        return;
+    }
+    root ++> ProgramKnowledge(
+        name="IRS 501(r) Financial Assistance Policy",
+        eligibility="Nonprofit hospitals must maintain a written Financial Assistance Policy (FAP) and determine FAP eligibility before pursuing extraordinary collection actions.",
+        citation="IRC 501(r)(4)-(6)"
+    );
+    root ++> ProgramKnowledge(
+        name="Amounts Generally Billed (AGB) cap",
+        eligibility="FAP-eligible patients at a nonprofit hospital cannot be charged more than AGB - what insured patients would typically pay - for emergency or medically necessary care.",
+        citation="IRC 501(r)(5)"
+    );
+    root ++> ProgramKnowledge(
+        name="Charity care",
+        eligibility="Many hospitals offer free or deeply discounted care for patients under roughly 200-400% of the Federal Poverty Level, varying by hospital policy.",
+        citation="Hospital-specific Financial Assistance Policy"
+    );
+    root ++> ProgramKnowledge(
+        name="Interest-free payment plans",
+        eligibility="Patients who don't qualify for a discount can often still get a monthly payment plan with no interest or fees added.",
+        citation="Hospital billing policy"
+    );
+    root ++> ProgramKnowledge(
+        name="Itemized bill review",
+        eligibility="Patients can request an itemized bill and dispute duplicate or incorrect charges before paying.",
+        citation="Standard billing practice"
+    );
+}
+
+"""Flatten seeded program facts into plain strings for LLM context."""
+def program_context() -> list[str] {
+    facts: list[str] = [];
+    for p in [root -->[?:ProgramKnowledge]] {
+        facts.append(p.name + ": " + p.eligibility + " (" + p.citation + ")");
+    }
+    return facts;
 }
 
 
-# --- Exemplar transfer -------------------------------------------------------
-# Graph-native persistence works under `jac run` / `jac test` but NOT when Jac
-# is driven from plain Python (verified: the Jac path accumulates across runs,
-# the Python path starts fresh every time and writes land inconsistently).
-# Telephony is Python - uvicorn/FastAPI - so a live call would otherwise begin
-# with empty exemplar banks and learn nothing.
-#
-# These two functions bridge that gap. The learning loop runs under `jac run`,
-# persists natively, and exports; the telephony process imports at startup and
-# gets the learned banks in memory for every call it serves.
+# --- Cross-call learning -----------------------------------------------------
+# Root-anchored Hospital nodes accumulate CallOutcomes across separate runs, so
+# the agent can open a later call against the same hospital already knowing
+# what worked. Every call now belongs to a Hospital (get_or_create_hospital
+# resolves or creates it), and its Opening hangs off that Hospital - not bare
+# root - so repeated calls against one hospital stay structurally grouped for
+# both this and printgraph (Upgrade 2).
 
-import json;
-import os;
-
-"""Write the canonical graph's exemplar banks to a JSON file."""
-def save_exemplars(path: str) -> int {
-    opening = get_or_build_call_graph();
-    banks: dict = {};
-    total = 0;
-    tactics: list[Tactic] = [
-        opening, [opening ->:SoftNo:->][0], [opening ->:NeedsEscalation:->][0]
-    ];
-    for tactic in tactics {
-        banks[tactic.label] = {
-            "exemplars": list(tactic.exemplars),
-            "playbook": list(tactic.playbook)
-        };
-        total += len(tactic.playbook);
-    }
-    with open(path, "w") as f {
-        json.dump(banks, f, indent=2);
-    }
-    return total;
+node Hospital {
+    has name: str;
 }
 
-"""Load exemplar banks from a JSON file onto the canonical graph.
-
-Returns the number of lines loaded; 0 if the file does not exist, so a fresh
-checkout runs fine with no exemplars rather than crashing.
-"""
-def load_exemplars(path: str) -> int {
-    if not os.path.exists(path) {
-        return 0;
-    }
-    with open(path) as f {
-        banks = json.load(f);
-    }
-    opening = get_or_build_call_graph();
-    total = 0;
-    tactics: list[Tactic] = [
-        opening, [opening ->:SoftNo:->][0], [opening ->:NeedsEscalation:->][0]
-    ];
-    for tactic in tactics {
-        raw = banks.get(tactic.label, {});
-        # Tolerate the older flat shape ({label: [lines]}) as well as the
-        # current one ({label: {exemplars: [], playbook: []}}).
-        if isinstance(raw, list) {
-            tactic.exemplars = list(raw);
-            tactic.playbook = [];
-        } else {
-            entry: dict = dict(raw);
-            tactic.exemplars = list(entry.get("exemplars", []));
-            tactic.playbook = list(entry.get("playbook", []));
-        }
-        total += len(tactic.playbook) + len(tactic.exemplars);
-    }
-    return total;
+node CallOutcome {
+    has result: str;         # "deal_reached" | "dead_end"
+    has winning_move: str;   # the TacticMove name in play when the call ended
+    has date: str;           # ISO date, e.g. "2026-07-26"
 }
 
+edge PlacedCall: Hospital --> Opening {}
+edge HadCall: Hospital --> CallOutcome {}
 
-"""Get the canonical tactic graph, building it once if it does not exist.
-
-Idempotent by design. Every call - simulated or live - spawns against the
-same five nodes, so exemplars accumulate across calls and across process
-restarts via Jac's graph-native persistence.
-"""
-def get_or_build_call_graph() -> Opening {
-    existing = [root -->[?:Opening]];
-    if existing {
+"""Find the Hospital node for this name, or create it under root if this is
+the first call against it. Deliberately a plain function, not a walker spawned
+on root - spawning a lookup walker on root is the documented anti-pattern this
+project already hit once (a duplicate-Opening bug from a walker spawned on the
+wrong node)."""
+def get_or_create_hospital(hospital_name: str) -> Hospital {
+    existing = [root -->[?:Hospital, name == hospital_name]];
+    if len(existing) > 0 {
         return existing[0];
     }
+    fresh = root ++> Hospital(name=hospital_name);
+    return fresh[0];
+}
 
+"""Summarize a hospital's prior call outcomes into one sentence for
+choose_next_tactic's prior_experience context. Returns a plain string, never
+CallOutcome nodes themselves, for the same reason program_context() flattens
+ProgramKnowledge - obj/node params are the bug class Upgrade 1 fixed."""
+def summarize_experience(hospital: Hospital) -> str {
+    outcomes = [hospital ->:HadCall:->];
+    if len(outcomes) == 0 {
+        return "No prior calls with this hospital.";
+    }
+    summary: str = str(len(outcomes)) + " prior call(s) with this hospital: ";
+    for o in outcomes {
+        summary = summary + "[" + o.result + " via " + o.winning_move + "] ";
+    }
+    return summary;
+}
+
+"""Record a completed call's outcome under its hospital."""
+def record_call_outcome(hospital: Hospital, result: str, winning_move: str) -> None {
+    today: str = str(datetime.now().date());
+    hospital +>:HadCall():+> CallOutcome(result=result, winning_move=winning_move, date=today);
+}
+
+
+"""Start a call: resolve/create its hospital, seed program knowledge, and
+create just the opening node, attached to that hospital (not bare root).
+
+Nothing else is pre-wired - the walker in agent.jac builds every subsequent
+node and edge live, per turn, as the rep's responses come in.
+"""
+def start_call(hospital: Hospital) -> Opening {
+    seed_program_knowledge();
     opening: Opening = Opening(label="opening");
-    counter: CounterOffer = CounterOffer(label="counter_offer");
-    escalation: Escalation = Escalation(label="escalation");
-    deal: DealReached = DealReached(label="deal_reached");
-    dead: DeadEnd = DeadEnd(label="dead_end");
-
-    root ++> opening;
-
-    opening +>:SoftNo():+> counter;
-    opening +>:Stonewalling():+> escalation;
-    opening +>:NeedsEscalation():+> escalation;
-    opening +>:HardNo():+> dead;
-    opening +>:Accepted():+> deal;
-
-    # Every tactic node wires all five intents. A node missing one silently
-    # ends the call: the walker's `visit [...] else` fallback fires and the
-    # negotiation reports dead_end even though the rep never refused.
-    counter +>:Accepted():+> deal;
-    counter +>:SoftNo():+> escalation;
-    counter +>:Stonewalling():+> escalation;
-    counter +>:NeedsEscalation():+> escalation;
-    counter +>:HardNo():+> dead;
-
-    # Escalation self-loops on everything short of a decision: the supervisor
-    # deflecting, holding firm, or handing off again all mean "keep pressing".
-    # Only Accepted/HardNo leave the node; max_turns bounds the loop.
-    escalation +>:Accepted():+> deal;
-    escalation +>:SoftNo():+> escalation;
-    escalation +>:Stonewalling():+> escalation;
-    escalation +>:NeedsEscalation():+> escalation;
-    escalation +>:HardNo():+> dead;
-
+    hospital +>:PlacedCall():+> opening;
     return opening;
 }
