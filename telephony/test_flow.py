@@ -39,17 +39,34 @@ def test_deal_via_escalation():
     assert any("supervisor" in ln.lower() for ln in session.transcript)
 
 
-def test_dead_end_when_no_edge():
-    # Opening -SoftNo-> CounterOffer, which has no SoftNo edge out: exercises the
-    # walker's dead_end() graceful-exit path (def-with-disengage).
+def test_repeated_soft_no_climbs_to_escalation():
+    # A deflecting rep must not end the call. Opening -SoftNo-> CounterOffer
+    # -SoftNo-> Escalation: the agent climbs the tactic ladder instead of
+    # hanging up. CounterOffer used to have no SoftNo edge, so this exact
+    # exchange -- the single most likely one on a real call -- dead-ended after
+    # two turns via the walker's graceful-exit fallback.
     session = _run(
         outputs=[
             "Hi, are there any financial assistance programs I might qualify for?",
             agent.RepIntent.SOFT_NO,       # opening -> CounterOffer
             "Could we set up an interest-free payment plan instead?",
-            agent.RepIntent.SOFT_NO,       # CounterOffer: no SoftNo edge -> dead end
+            agent.RepIntent.SOFT_NO,       # CounterOffer -> Escalation
+            "Could I speak with a supervisor about a hardship adjustment?",
         ],
         rep_lines=["Maybe, I'm not sure.", "Hmm, I really can't say."],
+    )
+    assert session.status == "in_progress", session.status
+    assert any("supervisor" in ln.lower() for ln in session.transcript)
+
+
+def test_hard_no_still_ends_the_call():
+    # The graceful exit must still fire when the rep genuinely refuses.
+    session = _run(
+        outputs=[
+            "Hi, are there any financial assistance programs I might qualify for?",
+            agent.RepIntent.HARD_NO,
+        ],
+        rep_lines=["No, we don't offer anything like that."],
     )
     assert session.status == "dead_end", session.status
 

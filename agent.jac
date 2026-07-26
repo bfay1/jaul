@@ -200,6 +200,23 @@ walker NegotiationTurn {
 
 # --- Tests (MockLLM - no API key or network needed) --------------------------
 
+test "every tactic node wires all five rep intents" {
+    # A tactic missing an edge does not error - the walker's `visit ... else`
+    # fallback quietly reports dead_end, so the call just stops. This guard
+    # makes that failure loud instead of invisible.
+    opening = build_call_graph();
+    counter = [opening ->:SoftNo:->][0];
+    escalation = [opening ->:NeedsEscalation:->][0];
+
+    for tactic in [opening, counter, escalation] {
+        assert len([tactic ->:SoftNo:->]) > 0;
+        assert len([tactic ->:Stonewalling:->]) > 0;
+        assert len([tactic ->:NeedsEscalation:->]) > 0;
+        assert len([tactic ->:Accepted:->]) > 0;
+        assert len([tactic ->:HardNo:->]) > 0;
+    }
+}
+
 test "rep agrees immediately and the call reaches a deal" {
     global llm;
     llm = MockLLM(model_name="mockllm", config={"outputs": [

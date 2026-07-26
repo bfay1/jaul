@@ -60,11 +60,21 @@ def build_call_graph() -> Opening {
     opening +>:HardNo():+> dead;
     opening +>:Accepted():+> deal;
 
+    # Every tactic node wires all five intents. A node missing one silently
+    # ends the call: the walker's `visit [...] else` fallback fires and the
+    # negotiation reports dead_end even though the rep never refused.
     counter +>:Accepted():+> deal;
+    counter +>:SoftNo():+> escalation;
     counter +>:Stonewalling():+> escalation;
+    counter +>:NeedsEscalation():+> escalation;
     counter +>:HardNo():+> dead;
 
+    # Escalation self-loops on everything short of a decision: the supervisor
+    # deflecting, holding firm, or handing off again all mean "keep pressing".
+    # Only Accepted/HardNo leave the node; max_turns bounds the loop.
     escalation +>:Accepted():+> deal;
+    escalation +>:SoftNo():+> escalation;
+    escalation +>:Stonewalling():+> escalation;
     escalation +>:NeedsEscalation():+> escalation;
     escalation +>:HardNo():+> dead;
 
