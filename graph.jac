@@ -8,6 +8,8 @@ decides what to do next - the graph is a trace of the call, not a map drawn in
 advance of it.
 """
 
+import from datetime { datetime }
+
 # --- Graph shape -----------------------------------------------------------
 # Every negotiation tactic is a typed node. All tactic nodes share the
 # `Tactic` base so edges can be typed `Tactic --> Tactic` instead of
@@ -102,14 +104,73 @@ def program_context() -> list[str] {
 }
 
 
-"""Start a call: create just the opening node, attached to root.
+# --- Cross-call learning -----------------------------------------------------
+# Root-anchored Hospital nodes accumulate CallOutcomes across separate runs, so
+# the agent can open a later call against the same hospital already knowing
+# what worked. Every call now belongs to a Hospital (get_or_create_hospital
+# resolves or creates it), and its Opening hangs off that Hospital - not bare
+# root - so repeated calls against one hospital stay structurally grouped for
+# both this and printgraph (Upgrade 2).
+
+node Hospital {
+    has name: str;
+}
+
+node CallOutcome {
+    has result: str;         # "deal_reached" | "dead_end"
+    has winning_move: str;   # the TacticMove name in play when the call ended
+    has date: str;           # ISO date, e.g. "2026-07-26"
+}
+
+edge PlacedCall: Hospital --> Opening {}
+edge HadCall: Hospital --> CallOutcome {}
+
+"""Find the Hospital node for this name, or create it under root if this is
+the first call against it. Deliberately a plain function, not a walker spawned
+on root - spawning a lookup walker on root is the documented anti-pattern this
+project already hit once (a duplicate-Opening bug from a walker spawned on the
+wrong node)."""
+def get_or_create_hospital(hospital_name: str) -> Hospital {
+    existing = [root -->[?:Hospital, name == hospital_name]];
+    if len(existing) > 0 {
+        return existing[0];
+    }
+    fresh = root ++> Hospital(name=hospital_name);
+    return fresh[0];
+}
+
+"""Summarize a hospital's prior call outcomes into one sentence for
+choose_next_tactic's prior_experience context. Returns a plain string, never
+CallOutcome nodes themselves, for the same reason program_context() flattens
+ProgramKnowledge - obj/node params are the bug class Upgrade 1 fixed."""
+def summarize_experience(hospital: Hospital) -> str {
+    outcomes = [hospital ->:HadCall:->];
+    if len(outcomes) == 0 {
+        return "No prior calls with this hospital.";
+    }
+    summary: str = str(len(outcomes)) + " prior call(s) with this hospital: ";
+    for o in outcomes {
+        summary = summary + "[" + o.result + " via " + o.winning_move + "] ";
+    }
+    return summary;
+}
+
+"""Record a completed call's outcome under its hospital."""
+def record_call_outcome(hospital: Hospital, result: str, winning_move: str) -> None {
+    today: str = str(datetime.now().date());
+    hospital +>:HadCall():+> CallOutcome(result=result, winning_move=winning_move, date=today);
+}
+
+
+"""Start a call: resolve/create its hospital, seed program knowledge, and
+create just the opening node, attached to that hospital (not bare root).
 
 Nothing else is pre-wired - the walker in agent.jac builds every subsequent
 node and edge live, per turn, as the rep's responses come in.
 """
-def start_call() -> Opening {
+def start_call(hospital: Hospital) -> Opening {
     seed_program_knowledge();
     opening: Opening = Opening(label="opening");
-    root ++> opening;
+    hospital +>:PlacedCall():+> opening;
     return opening;
 }

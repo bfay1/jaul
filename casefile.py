@@ -46,8 +46,24 @@ def case_from_argv():
         default=DEFAULT_CASE,
         help=f"Path to a markdown case file (default: {os.path.relpath(DEFAULT_CASE, _ROOT)}).",
     )
+    p.add_argument(
+        "--hospital",
+        default="Bay Area General",
+        help="Hospital name to negotiate against (default: Bay Area General, matching the bundled demo case). "
+             "Run with the same name repeatedly to see cross-call learning in action.",
+    )
     # jac leaves sys.argv as [script, *user_args]; argparse reads [1:] by default.
     a = p.parse_args()
     if not os.path.exists(a.case):
         raise SystemExit(f"Case file not found: {a.case}")
     return load_case(a.case)
+
+
+def hospital_from_argv():
+    """Read --hospital from the command line (see case_from_argv's --hospital)."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--hospital", default="Bay Area General")
+    # parse_known_args ignores --case (and anything else) rather than erroring on it -
+    # this parser only cares about --hospital.
+    a, _ = p.parse_known_args()
+    return a.hospital

@@ -12,8 +12,10 @@ module's `glob llm` and exercise the same functions.
 import from byllm.lib { Model, MockLLM }
 import from graph {
     Tactic, Opening, TacticStep, DealReached, DeadEnd, ProgramKnowledge,
-    SoftNo, Stonewalling, NeedsEscalation, Accepted, HardNo,
-    start_call, program_context, seed_program_knowledge
+    Hospital,
+    SoftNo, Stonewalling, NeedsEscalation, Accepted, HardNo, HadCall,
+    start_call, program_context, seed_program_knowledge,
+    get_or_create_hospital, summarize_experience, record_call_outcome
 }
 
 # --- Model config ------------------------------------------------------------
@@ -111,11 +113,12 @@ def classify_response(response: str) -> RepIntent by llm();
 sem classify_response = "Classify a hospital billing rep's most recent spoken line, during a patient's call negotiating financial assistance, into the intent that best matches what the rep just said.";
 sem classify_response.response = "The rep's most recent spoken line in the call.";
 
-def choose_next_tactic(transcript: list[str], last_intent: RepIntent, programs: list[str]) -> TacticMove by llm();
-sem choose_next_tactic = "Decide the patient advocate's next negotiation tactic during a call with a hospital billing department, given how the rep just responded, the transcript so far, and the real assistance programs available. Pick the single move most likely to advance toward a concrete financial-assistance arrangement, without repeating a tactic that visibly isn't working. Prefer CITE_501R when the available program facts include a nonprofit-hospital obligation that's directly relevant and hasn't been raised yet.";
+def choose_next_tactic(transcript: list[str], last_intent: RepIntent, programs: list[str], prior_experience: str) -> TacticMove by llm();
+sem choose_next_tactic = "Decide the patient advocate's next negotiation tactic during a call with a hospital billing department, given how the rep just responded, the transcript so far, the real assistance programs available, and what has worked against this same hospital in prior calls. Pick the single move most likely to advance toward a concrete financial-assistance arrangement, without repeating a tactic that visibly isn't working. Prefer CITE_501R when the available program facts include a nonprofit-hospital obligation that's directly relevant and hasn't been raised yet. When prior experience shows a tactic that has worked against this hospital before, prefer trying it earlier.";
 sem choose_next_tactic.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines.";
 sem choose_next_tactic.last_intent = "How the rep's most recent reply was just classified - what prompted this decision.";
 sem choose_next_tactic.programs = "Real financial-assistance program facts (name, eligibility, and legal/policy citation) available to ground this choice - e.g. whether a 501(r) obligation or charity-care threshold applies.";
+sem choose_next_tactic.prior_experience = "A summary of prior call outcomes against this same hospital, if any - which tactics led to a deal versus a dead end.";
 
 def rep_reply(transcript: list[str]) -> str by llm();
 sem rep_reply = "You are playing a realistic, moderately resistant hospital billing department representative on a phone call. Respond naturally and briefly to the agent's most recent line, staying consistent with everything said earlier in the call. Be a believable mix of vague deflection, protectiveness about what you're allowed to approve, occasional willingness to loop in a supervisor, and only rarely an immediate yes.";
@@ -158,6 +161,23 @@ def reach_terminal(current: Tactic, intent: RepIntent) -> Tactic {
     return dead;
 }
 
+"""Read which tactic move led to a just-reached terminal node (DealReached or
+DeadEnd), for outcome recording. "opening" means the call ended on the very
+first turn, before any tactic move was ever chosen. Reads the incoming edge
+rather than tracking a walker field across the visit - works identically for
+NegotiationAgent's single spawn and NegotiationTurn's fresh-spawn-per-turn."""
+def move_leading_to(terminal: Tactic) -> str {
+    predecessors = [terminal <--];
+    if len(predecessors) == 0 {
+        return "opening";
+    }
+    prior = predecessors[0];
+    if isinstance(prior, TacticStep) {
+        return prior.move;
+    }
+    return "opening";
+}
+
 
 # --- The walker: the negotiation engine -------------------------------------
 
@@ -167,6 +187,7 @@ walker NegotiationAgent {
     has turns: int = 0;
     has max_turns: int = 6;
     has patient: PatientCase = demo_case();
+    has hospital: Hospital | None = None;
 
     can negotiate with Opening | TacticStep entry {
         self.turns += 1;
@@ -188,7 +209,11 @@ walker NegotiationAgent {
             terminal_node = reach_terminal(here, intent);
             visit [terminal_node];
         } else {
-            move = choose_next_tactic(self.transcript, intent, programs);
+            prior_experience = "No prior calls with this hospital.";
+            if self.hospital is not None {
+                prior_experience = summarize_experience(self.hospital);
+            }
+            move = choose_next_tactic(self.transcript, intent, programs, prior_experience);
             new_step = advance_tactic(here, intent, move);
             visit [new_step];
         }
@@ -197,12 +222,18 @@ walker NegotiationAgent {
     can reach_deal with DealReached entry {
         self.outcome = "deal_reached";
         self.transcript.append("OUTCOME: deal reached - " + here.label);
+        if self.hospital is not None {
+            record_call_outcome(self.hospital, "deal_reached", move_leading_to(here));
+        }
         disengage;
     }
 
     can reach_dead_end with DeadEnd entry {
         self.outcome = "dead_end";
         self.transcript.append("OUTCOME: no assistance available");
+        if self.hospital is not None {
+            record_call_outcome(self.hospital, "dead_end", move_leading_to(here));
+        }
         disengage;
     }
 }
@@ -231,6 +262,7 @@ walker NegotiationTurn {
     has status: str = "in_progress";       # OUT: in_progress | deal_reached | dead_end
     has end_node: Tactic | None = None;    # OUT: node to resume from next turn
     has patient: PatientCase = demo_case();
+    has hospital: Hospital | None = None;
 
     can step with Opening | TacticStep entry {
         # No rep utterance yet => we just arrived at this tactic (either the
@@ -256,7 +288,11 @@ walker NegotiationTurn {
             terminal_node = reach_terminal(here, intent);
             visit [terminal_node];
         } else {
-            move = choose_next_tactic(self.transcript, intent, program_context());
+            prior_experience = "No prior calls with this hospital.";
+            if self.hospital is not None {
+                prior_experience = summarize_experience(self.hospital);
+            }
+            move = choose_next_tactic(self.transcript, intent, program_context(), prior_experience);
             new_step = advance_tactic(here, intent, move);
             visit [new_step];
         }
@@ -267,6 +303,9 @@ walker NegotiationTurn {
         self.agent_line = "Wonderful - thank you so much, that's a real help. Have a great day.";
         self.transcript.append("AGENT: " + self.agent_line);
         self.end_node = here;
+        if self.hospital is not None {
+            record_call_outcome(self.hospital, "deal_reached", move_leading_to(here));
+        }
         disengage;
     }
 
@@ -275,6 +314,9 @@ walker NegotiationTurn {
         self.agent_line = "I understand - thank you for taking the time to look into it for me.";
         self.transcript.append("AGENT: " + self.agent_line);
         self.end_node = here;
+        if self.hospital is not None {
+            record_call_outcome(self.hospital, "dead_end", move_leading_to(here));
+        }
         disengage;
     }
 }
@@ -290,8 +332,9 @@ test "rep agrees immediately and the call reaches a deal" {
         RepIntent.ACCEPTED
     ]});
 
-    opening = start_call();
-    result = opening spawn NegotiationAgent();
+    hospital = get_or_create_hospital("Test Hospital - immediate accept");
+    opening = start_call(hospital);
+    result = opening spawn NegotiationAgent(hospital=hospital);
 
     assert result.outcome == "deal_reached";
     assert len(result.transcript) >= 3;
@@ -306,8 +349,9 @@ test "a firm hard no from the rep leads to a dead end" {
         RepIntent.HARD_NO
     ]});
 
-    opening = start_call();
-    result = opening spawn NegotiationAgent();
+    hospital = get_or_create_hospital("Test Hospital - hard no");
+    opening = start_call(hospital);
+    result = opening spawn NegotiationAgent(hospital=hospital);
 
     assert result.outcome == "dead_end";
     assert result.transcript[-1] == "OUTCOME: no assistance available";
@@ -325,10 +369,47 @@ test "escalation followed by acceptance still reaches a deal" {
         RepIntent.ACCEPTED
     ]});
 
-    opening = start_call();
-    result = opening spawn NegotiationAgent();
+    hospital = get_or_create_hospital("Test Hospital - escalation then accept");
+    opening = start_call(hospital);
+    result = opening spawn NegotiationAgent(hospital=hospital);
 
     assert result.outcome == "deal_reached";
+}
+
+test "cross-call learning accumulates outcomes for the same hospital" {
+    global llm;
+    hospital = get_or_create_hospital("Test Hospital - learning demo");
+    count_before = len([hospital ->:HadCall:->]);
+
+    llm = MockLLM(model_name="mockllm", config={"outputs": [
+        "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
+        "No, we don't offer anything like that, sorry.",
+        RepIntent.HARD_NO
+    ]});
+    opening1 = start_call(hospital);
+    result1 = opening1 spawn NegotiationAgent(hospital=hospital);
+    assert result1.outcome == "dead_end";
+
+    outcomes_after_first = [hospital ->:HadCall:->];
+    assert len(outcomes_after_first) == count_before + 1;
+    assert outcomes_after_first[-1].result == "dead_end";
+    assert outcomes_after_first[-1].winning_move == "opening";
+
+    llm = MockLLM(model_name="mockllm", config={"outputs": [
+        "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
+        "Sure, let me get that set up for you right now.",
+        RepIntent.ACCEPTED
+    ]});
+    opening2 = start_call(hospital);
+    result2 = opening2 spawn NegotiationAgent(hospital=hospital);
+    assert result2.outcome == "deal_reached";
+
+    outcomes_after_second = [hospital ->:HadCall:->];
+    assert len(outcomes_after_second) == count_before + 2;
+
+    experience = summarize_experience(hospital);
+    assert "deal_reached" in experience;
+    assert "dead_end" in experience;
 }
 
 test "program knowledge seeds idempotently and flattens to non-empty strings" {

@@ -33,8 +33,12 @@ def load_case(path: str):
 class NegotiationSession:
     """One live call. Not thread-safe; one session per CallSid."""
 
-    def __init__(self, patient=None) -> None:
-        self._node = _graph.start_call()   # this call's fresh opening node
+    def __init__(self, patient=None, hospital_name: str | None = None) -> None:
+        # Resolved/created once per session and reused every turn, so
+        # cross-call learning (Hospital/CallOutcome) groups repeated calls
+        # against the same hospital rather than starting fresh each time.
+        self._hospital = _graph.get_or_create_hospital(hospital_name or "Bay Area General")
+        self._node = _graph.start_call(self._hospital)   # this call's fresh opening node
         # An _agent.PatientCase (e.g. via load_case), or None to let the walker
         # fall back to its demo_case() default.
         self._patient = patient
@@ -58,7 +62,11 @@ class NegotiationSession:
             self.transcript.append("AGENT: " + line)
             return line, self.status
 
-        kwargs = {"rep_utterance": rep_utterance, "transcript": list(self.transcript)}
+        kwargs = {
+            "rep_utterance": rep_utterance,
+            "transcript": list(self.transcript),
+            "hospital": self._hospital,
+        }
         if self._patient is not None:
             kwargs["patient"] = self._patient
         w = _agent.NegotiationTurn(**kwargs)
