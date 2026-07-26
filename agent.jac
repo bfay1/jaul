@@ -11,9 +11,9 @@ module's `glob llm` and exercise the same functions.
 
 import from byllm.lib { Model, MockLLM }
 import from graph {
-    Tactic, Opening, TacticStep, DealReached, DeadEnd,
+    Tactic, Opening, TacticStep, DealReached, DeadEnd, ProgramKnowledge,
     SoftNo, Stonewalling, NeedsEscalation, Accepted, HardNo,
-    start_call
+    start_call, program_context, seed_program_knowledge
 }
 
 # --- Model config ------------------------------------------------------------
@@ -47,14 +47,15 @@ obj PatientCase {
     # and is byllm's own documented idiom - the object's `has` fields (name,
     # notes) are automatically included as context, no explicit passing
     # needed. Verified working via a minimal repro before adopting this.
-    def generate_line(tactic_label: str, transcript: list[str]) -> str by llm();
+    def generate_line(tactic_label: str, transcript: list[str], programs: list[str]) -> str by llm();
 }
 sem PatientCase = "The case file for the patient the agent is advocating for.";
 sem PatientCase.name = "A short name/label for the patient, for display.";
 sem PatientCase.notes = "The full case file (markdown): the patient's financial situation, insurance, bill, hardship, and goals. Ground every ask in these specifics.";
-sem PatientCase.generate_line = "You are a calm, persistent patient advocate on a phone call with a hospital billing department, calling on behalf of the patient described by your name and notes. Introduce yourself only as calling on behalf of that patient by name (e.g. \"I'm calling on behalf of Jordan Rivera\") - you have no name of your own, so NEVER invent, state, or use a placeholder name (such as 'Agent Name' or similar) for yourself. Ground every ask in the case's specifics - income relative to the federal poverty level, the bill amount, insurance status, nonprofit 501(r) obligations, and hardship - to argue for income-based discounts, charity care, and interest-free payment plans they may qualify for, without being pushy. Given the current tactic phase and the transcript so far, draft the agent's single next spoken line - polite, concise, specific to this patient, and fitting the phase.";
+sem PatientCase.generate_line = "You are a calm, persistent patient advocate on a phone call with a hospital billing department, calling on behalf of the patient described by your name and notes. Introduce yourself only as calling on behalf of that patient by name (e.g. \"I'm calling on behalf of Jordan Rivera\") - you have no name of your own, so NEVER invent, state, or use a placeholder name (such as 'Agent Name' or similar) for yourself. Ground every ask in the case's specifics - income relative to the federal poverty level, the bill amount, insurance status, nonprofit 501(r) obligations, and hardship - to argue for income-based discounts, charity care, and interest-free payment plans they may qualify for, without being pushy. When the tactic phase calls for citing a specific real program (e.g. CITE_501R), name the actual rule or citation from the given program facts rather than speaking generically. Given the current tactic phase, the transcript so far, and the real program facts available, draft the agent's single next spoken line - polite, concise, specific to this patient, and fitting the phase.";
 sem PatientCase.generate_line.tactic_label = "The current negotiation phase: 'opening' (first ask about assistance programs), or the name of the tactic move just chosen - 'ASK_ASSISTANCE' (reiterating the ask), 'OFFER_INCOME_DISCOUNT' (proposing an income-based discount), 'REQUEST_CHARITY_CARE' (asking about charity care eligibility), 'PROPOSE_PAYMENT_PLAN' (proposing an interest-free payment plan), 'CITE_501R' (invoking the hospital's IRS 501(r) financial assistance policy obligations), or 'ESCALATE' (asking to speak with a supervisor).";
 sem PatientCase.generate_line.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines.";
+sem PatientCase.generate_line.programs = "Real financial-assistance program facts (name, eligibility, and legal/policy citation) the agent can draw on and cite by name - especially for the CITE_501R tactic.";
 
 """A built-in default case - used for tests and as the walkers' default when no
 case file is supplied. Mirrors cases/jordan-rivera.md in brief."""
@@ -110,10 +111,11 @@ def classify_response(response: str) -> RepIntent by llm();
 sem classify_response = "Classify a hospital billing rep's most recent spoken line, during a patient's call negotiating financial assistance, into the intent that best matches what the rep just said.";
 sem classify_response.response = "The rep's most recent spoken line in the call.";
 
-def choose_next_tactic(transcript: list[str], last_intent: RepIntent) -> TacticMove by llm();
-sem choose_next_tactic = "Decide the patient advocate's next negotiation tactic during a call with a hospital billing department, given how the rep just responded and the transcript so far. Pick the single move most likely to advance toward a concrete financial-assistance arrangement, without repeating a tactic that visibly isn't working.";
+def choose_next_tactic(transcript: list[str], last_intent: RepIntent, programs: list[str]) -> TacticMove by llm();
+sem choose_next_tactic = "Decide the patient advocate's next negotiation tactic during a call with a hospital billing department, given how the rep just responded, the transcript so far, and the real assistance programs available. Pick the single move most likely to advance toward a concrete financial-assistance arrangement, without repeating a tactic that visibly isn't working. Prefer CITE_501R when the available program facts include a nonprofit-hospital obligation that's directly relevant and hasn't been raised yet.";
 sem choose_next_tactic.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines.";
 sem choose_next_tactic.last_intent = "How the rep's most recent reply was just classified - what prompted this decision.";
+sem choose_next_tactic.programs = "Real financial-assistance program facts (name, eligibility, and legal/policy citation) available to ground this choice - e.g. whether a 501(r) obligation or charity-care threshold applies.";
 
 def rep_reply(transcript: list[str]) -> str by llm();
 sem rep_reply = "You are playing a realistic, moderately resistant hospital billing department representative on a phone call. Respond naturally and briefly to the agent's most recent line, staying consistent with everything said earlier in the call. Be a believable mix of vague deflection, protectiveness about what you're allowed to approve, occasional willingness to loop in a supervisor, and only rarely an immediate yes.";
@@ -173,7 +175,8 @@ walker NegotiationAgent {
             disengage;
         }
 
-        line = self.patient.generate_line(here.label, self.transcript);
+        programs = program_context();
+        line = self.patient.generate_line(here.label, self.transcript, programs);
         self.transcript.append("AGENT: " + line);
 
         response = rep_reply(self.transcript);
@@ -185,7 +188,7 @@ walker NegotiationAgent {
             terminal_node = reach_terminal(here, intent);
             visit [terminal_node];
         } else {
-            move = choose_next_tactic(self.transcript, intent);
+            move = choose_next_tactic(self.transcript, intent, programs);
             new_step = advance_tactic(here, intent, move);
             visit [new_step];
         }
@@ -234,7 +237,8 @@ walker NegotiationTurn {
         # call's opening, or a hop taken this same spawn). Speak its line and
         # stop, leaving `end_node` here for the next webhook to resume from.
         if self.rep_utterance == "" {
-            self.agent_line = self.patient.generate_line(here.label, self.transcript);
+            programs = program_context();
+            self.agent_line = self.patient.generate_line(here.label, self.transcript, programs);
             self.transcript.append("AGENT: " + self.agent_line);
             self.end_node = here;
             disengage;
@@ -252,7 +256,7 @@ walker NegotiationTurn {
             terminal_node = reach_terminal(here, intent);
             visit [terminal_node];
         } else {
-            move = choose_next_tactic(self.transcript, intent);
+            move = choose_next_tactic(self.transcript, intent, program_context());
             new_step = advance_tactic(here, intent, move);
             visit [new_step];
         }
@@ -325,4 +329,20 @@ test "escalation followed by acceptance still reaches a deal" {
     result = opening spawn NegotiationAgent();
 
     assert result.outcome == "deal_reached";
+}
+
+test "program knowledge seeds idempotently and flattens to non-empty strings" {
+    seed_program_knowledge();
+    count_after_first = len([root -->[?:ProgramKnowledge]]);
+    seed_program_knowledge();
+    count_after_second = len([root -->[?:ProgramKnowledge]]);
+
+    assert count_after_first > 0;
+    assert count_after_first == count_after_second;
+
+    facts = program_context();
+    assert len(facts) == count_after_first;
+    for fact in facts {
+        assert len(fact) > 0;
+    }
 }

@@ -47,12 +47,68 @@ edge Accepted: Tactic --> Tactic {}
 edge HardNo: Tactic --> Tactic {}
 
 
+# --- Real assistance-program facts ------------------------------------------
+# Root-anchored, seeded once, read by agent.jac and flattened to plain strings
+# before ever reaching a by llm() call - never pass these nodes themselves
+# into an LLM call (an obj/node parameter is the exact bug class that broke
+# every call before Upgrade 1's fix).
+
+node ProgramKnowledge {
+    has name: str;
+    has eligibility: str;
+    has citation: str;
+}
+
+"""Seed the canonical assistance-program facts under root, once. Idempotent -
+safe to call on every start_call()."""
+def seed_program_knowledge() -> None {
+    if len([root -->[?:ProgramKnowledge]]) > 0 {
+        return;
+    }
+    root ++> ProgramKnowledge(
+        name="IRS 501(r) Financial Assistance Policy",
+        eligibility="Nonprofit hospitals must maintain a written Financial Assistance Policy (FAP) and determine FAP eligibility before pursuing extraordinary collection actions.",
+        citation="IRC 501(r)(4)-(6)"
+    );
+    root ++> ProgramKnowledge(
+        name="Amounts Generally Billed (AGB) cap",
+        eligibility="FAP-eligible patients at a nonprofit hospital cannot be charged more than AGB - what insured patients would typically pay - for emergency or medically necessary care.",
+        citation="IRC 501(r)(5)"
+    );
+    root ++> ProgramKnowledge(
+        name="Charity care",
+        eligibility="Many hospitals offer free or deeply discounted care for patients under roughly 200-400% of the Federal Poverty Level, varying by hospital policy.",
+        citation="Hospital-specific Financial Assistance Policy"
+    );
+    root ++> ProgramKnowledge(
+        name="Interest-free payment plans",
+        eligibility="Patients who don't qualify for a discount can often still get a monthly payment plan with no interest or fees added.",
+        citation="Hospital billing policy"
+    );
+    root ++> ProgramKnowledge(
+        name="Itemized bill review",
+        eligibility="Patients can request an itemized bill and dispute duplicate or incorrect charges before paying.",
+        citation="Standard billing practice"
+    );
+}
+
+"""Flatten seeded program facts into plain strings for LLM context."""
+def program_context() -> list[str] {
+    facts: list[str] = [];
+    for p in [root -->[?:ProgramKnowledge]] {
+        facts.append(p.name + ": " + p.eligibility + " (" + p.citation + ")");
+    }
+    return facts;
+}
+
+
 """Start a call: create just the opening node, attached to root.
 
 Nothing else is pre-wired - the walker in agent.jac builds every subsequent
 node and edge live, per turn, as the rep's responses come in.
 """
 def start_call() -> Opening {
+    seed_program_knowledge();
     opening: Opening = Opening(label="opening");
     root ++> opening;
     return opening;
