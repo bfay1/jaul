@@ -39,4 +39,14 @@ with entry:__main__ {
         print(line);
     }
     print("--- outcome: " + result.outcome + " ---");
+
+    # printgraph(opening) is a literal trace of the tactic path THIS call took
+    # - different calls produce different shapes, since nothing was pre-wired.
+    # Note: printgraph's depth is symmetric in both directions from the given
+    # node, so with no depth limit it also climbs up through the Hospital to
+    # root and back down into anything else there (other hospitals,
+    # ProgramKnowledge facts) - fine for a demo with one hospital in play, but
+    # worth knowing if the image ever looks busier than just this call.
+    dot = printgraph(opening, file="call_graph.dot");
+    print("--- graph written to call_graph.dot (" + str(len(dot)) + " bytes); render with: dot -Tsvg call_graph.dot -o call_graph.svg ---");
 }

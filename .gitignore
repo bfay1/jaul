@@ -4,3 +4,6 @@ jac-env/
 jac.local.toml
 __pycache__/
 *.pyc
+# Generated per-run by main.jac (Upgrade 2 visualization) - not source.
+call_graph.dot
+call_graph.svg
