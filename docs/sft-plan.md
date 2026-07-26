@@ -1,190 +1,250 @@
-# SFT plan — making the agent's lines better
+# Learning better negotiation lines — plan
 
 Owner: @asashepard. Branch: `sft`.
 
-Sibling workstreams (don't collide): ElevenLabs voice lives in `telephony/`;
-patient context lives in the graph/prompt inputs. **This workstream owns
-`generate_line` and the data around it.** See "Merge surface" at the bottom.
+Sibling workstreams: ElevenLabs voice owns `telephony/`; patient context owns
+the inputs to `generate_line`. **This workstream owns how the agent's lines are
+learned and where they're stored.** See "Merge surface" at the bottom.
 
 ---
 
-## The constraint that shapes the whole plan
+## What we're building, and what to call it
 
-**You cannot SFT Claude.** Anthropic does not expose fine-tuning on the public
-API — no endpoint exists in the API surface. The one historically supported
-path was supervised fine-tuning of **Claude 3 Haiku on Amazon Bedrock**, and
-that model **retired on 2026-04-19** — three months ago. It also required
-buying Bedrock Provisioned Throughput to serve the result, which is not a
-hackathon budget. Custom model training exists only under enterprise
-agreements.
+**Claude cannot be fine-tuned.** No endpoint exists on the public API. The one
+historical path — SFT of Claude 3 Haiku on Bedrock — targets a model that
+**retired 2026-04-19**, and required paid Provisioned Throughput to serve.
+Custom training is enterprise-agreement only.
 
-So "SFT" here means: **fine-tune a small open-weights model to imitate
-successful negotiation lines, and swap it in for `generate_line` only.**
-Classification and the rep simulator stay on Claude.
+The alternative isn't to tune a small open model instead. That would be
+competing against Claude and losing: a LoRA'd 7B trained on a few hundred
+self-play examples will not beat Sonnet at nuanced negotiation dialogue. Small-
+model fine-tuning buys cost and latency, neither of which is our bottleneck.
 
-This is a better demo anyway — it gives a measurable before/after on a metric
-that matters (deal rate), instead of a vibes claim about nicer wording.
+So: **the prompt is the learned parameter.** We mine successful negotiation
+trajectories and optimize two things against a measured objective — the `sem`
+instruction text, and which exemplar lines each tactic node carries.
+
+**Call it "trajectory-mined prompt optimization," not SFT.** On Devpost, say we
+optimize prompt parameters against a supervised objective. It's an honest
+description of a real technique, and the eval harness is what backs it. An AI
+track will spot "we fine-tuned the model" when we didn't, and that costs more
+credibility than the phrase buys.
 
 ---
 
-## Where SFT attaches
+## Where it attaches
 
 Three `by llm()` functions in `agent.jac`:
 
-| Function | Role | SFT target? |
+| Function | Role | In scope? |
 |---|---|---|
-| `generate_line` | Produces the agent's spoken line each turn | **Yes — primary.** This *is* "conversation responses." |
-| `classify_response` | Maps the rep's reply to an edge type | Secondary. Easy to eval (labeled), cheap to serve, but it already works. |
-| `rep_reply` | Mock billing rep | **No — this is the data generator.** Keep it on Claude; it's the environment. |
+| `generate_line` | The agent's spoken line each turn | **Yes — this is the target.** |
+| `classify_response` | Rep's reply → edge type | Only as an eval subject (see False Yes below). |
+| `rep_reply` | Mock billing rep | **No — this is the simulator.** It's the environment, not the policy. |
 
-The swap itself is two lines, because byLLM binds models per function via any
-module-level `glob`:
+### The core idea: exemplar banks live on the tactic nodes
 
 ```jac
-glob negotiator: Model = Model(model_name="ollama/jaul-negotiator");
-def generate_line(tactic_label: str, transcript: list[str]) -> str by negotiator();
+node Tactic {
+    has label: str;
+    has exemplars: list[str] = [];   # winning lines spoken from this tactic
+}
 ```
 
-`classify_response` and `rep_reply` keep using `glob llm` (Claude). That
-isolation is the point: one function changes, the graph traversal and the
-evaluation harness are identical across base and tuned runs.
+Winning lines get written back onto the node they were spoken from.
+`generate_line` retrieves `here.exemplars` during traversal — the walker picks
+up the right few-shot examples *because of where it is in the graph*.
+
+Three things this buys that a fine-tune doesn't:
+
+- **The graph is the learned artifact.** Landing on `Escalation` retrieves
+  escalation exemplars. No vector index, no separate store — the OSP traversal
+  *is* the lookup. That's the thing the track is judging.
+- **It updates live.** A call that closes writes its lines back, so the agent
+  improves across runs via graph-native persistence — the feature CLAUDE.md
+  promises and doesn't yet deliver.
+- **Per-node ablation is free.** Eval can toggle exemplars per tactic and show
+  *which phase* of the negotiation the learning actually helped.
 
 ---
 
-## Blocker: there is currently zero training data
+## Blocker: nothing persists today
 
-**Nothing persists a transcript.** This is the single biggest gap and Phase 0
-exists only to fix it.
+- `build_call_graph()` does `root ++> opening`, storing the tactic graph shape
+  and nothing else.
+- Transcripts live in walker state and are discarded on completion.
+  `telephony/core.py` holds them in memory until the process exits.
+- `DealReached.terms`, `DeadEnd.reason`, `CounterOffer.offer_terms` are
+  declared and **never written to**.
 
-- `build_call_graph()` does `root ++> opening`, which persists the *tactic
-  graph shape* — five nodes and their edges — and nothing else.
-- The transcript lives in walker state (`NegotiationAgent.transcript`) and is
-  discarded when the walker finishes. `telephony/core.py` keeps it in an
-  in-memory `NegotiationSession` that dies with the process.
-- `DealReached.terms`, `DeadEnd.reason`, and `CounterOffer.offer_terms` are
-  declared in `graph.jac` but **never written to**.
+There is no data to mine yet. Phase 0 fixes this.
 
-CLAUDE.md claims graph-native persistence of "call history/outcomes." Today
-that claim is aspirational. Phase 0 makes it true, which is worth doing on its
-own merits — it's a judged Jac feature and currently a hole in the demo.
+---
+
+## Simulated call design
+
+This is the part that determines whether any of the rest is meaningful. If
+every simulated rep behaves the same way, we mine exemplars that beat one
+archetype and learn nothing transferable.
+
+### Persona is currently unmodeled
+
+`rep_reply`'s `sem` says "moderately resistant" and "consistent with everything
+said earlier." There's no persona anchor, so behavior drifts within a call and
+is near-identical across calls. `rep_reply` needs a persona argument, and the
+persona has to be pinned for the duration of a call:
+
+```jac
+def rep_reply(persona: str, transcript: list[str]) -> str by llm();
+```
+
+### Axes that actually vary on a real billing line
+
+Sample personas across these rather than writing flavor text:
+
+| Axis | Range |
+|---|---|
+| **Authority** | Can approve nothing / small discounts / full charity care |
+| **Knowledge** | Doesn't know programs exist → knows the policy verbatim |
+| **Disposition** | Sympathetic / neutral / actively obstructive |
+| **Script adherence** | Improvises → recites policy language and won't leave it |
+| **Time pressure** | Patient with the call → actively trying to end it |
+
+### The adversarial roster
+
+Each is a specific failure mode we want exemplars to survive:
+
+| Persona | Behavior | What it attacks |
+|---|---|---|
+| **Gatekeeper** | Flatly denies assistance programs exist — but they do | Whether the agent accepts a false premise |
+| **Runaround** | Transfers, gives another number, never resolves | Whether it holds position across deflections |
+| **Policy Wall** | Recites policy verbatim, won't engage with specifics | Whether it can reframe rather than repeat |
+| **Rusher** | "Anything else?" — tries to close the call early | Whether it keeps the thread alive |
+| **False Yes** | Agrees warmly, commits to nothing ("I'll make a note") | **`classify_response` directly** — see below |
+| **Upseller** | Offers a 24% APR plan instead of charity care | **Our own metric** — see below |
+
+**False Yes** is an eval subject, not just a training foil. A non-commitment
+phrased as agreement should classify as `SOFT_NO`, not `ACCEPTED`. If it
+classifies as `ACCEPTED`, the walker walks to `DealReached` and reports a deal
+that doesn't exist. Measure this explicitly — it's a correctness bug in the
+graph traversal, and it's the kind of thing a live demo will hit.
+
+**Upseller** breaks the objective function. If the rep offers a high-interest
+plan and the agent accepts, **deal rate goes up while the patient loses.**
+Optimizing on deal rate alone will actively learn to take bad deals. See
+Metrics.
+
+### Train / held-out split — on personas, not calls
+
+**Tune exemplars against one set of personas, evaluate against personas never
+seen during mining.** Splitting on calls instead of personas inflates deal rate
+by measuring memorization of specific rep behaviors.
+
+- Mine on: Gatekeeper, Policy Wall, Rusher, plus 2–3 neutral/sympathetic reps.
+- Hold out: Runaround, False Yes, Upseller — the three nastiest.
+
+Holding out the adversarial ones is deliberate. If exemplars mined against
+easier reps generalize to harder unseen ones, that's a real result. If they
+don't, that's also a real result and worth reporting honestly.
+
+### Patient context — interface, don't build
+
+Which programs apply depends on income, household size, bill size, and
+insurance status. That's the **other teammate's workstream** — don't build a
+parallel version. Agree on the shape early and sample from whatever they
+expose, so trajectories vary on patient circumstance too. Until it lands, use
+a stub with 3–4 hardcoded profiles so persona work isn't blocked.
 
 ---
 
 ## Phases
 
-Sequential; each is independently demoable, so a stall doesn't sink the rest.
+### Phase 0 — capture + exemplar storage (~40 min)
 
-### Phase 0 — capture layer (~30 min)
-
-Persist every call as graph data hanging off `root`. New node type in
-`graph.jac`:
+Add `Tactic.exemplars`, plus a `CallRecord` node hung off `root`:
 
 ```jac
 node CallRecord {
     has transcript: list[str] = [];
     has outcome: str = "";
-    has tactic_path: list[str] = [];   # ["opening", "counter_offer", ...]
-    has edge_path: list[str] = [];     # ["SoftNo", "NeedsEscalation", ...]
-    has model_tag: str = "";           # "base" | "tuned" — for the A/B
+    has tactic_path: list[str] = [];
+    has edge_path: list[str] = [];
+    has persona: str = "";       # which rep this call faced
+    has arm: str = "";           # "base" | "tuned" — for the A/B
 }
 ```
 
-Write it in the walker's exit ability so it captures both terminal paths, and
-populate the three dead fields while we're in there. `model_tag` is what makes
-Phase 4's comparison a graph query instead of a spreadsheet.
+Write it in the walker's exit abilities so both terminal paths are captured,
+and populate the three currently-dead fields while in there. `persona` and
+`arm` are what make Phase 4 a graph query instead of a spreadsheet.
 
 Deliverable: `jac test` proves a completed call leaves a queryable
-`CallRecord` under `root`.
+`CallRecord`, and that `Tactic.exemplars` round-trips.
 
-### Phase 1 — self-play data generation (~1 hr)
+### Phase 1 — persona-driven self-play (~1 hr)
 
-`rep_reply` is already a negotiation simulator. Run the agent against it N
-times with varied rep personas and patient contexts, and keep the trajectories
-that reach `DealReached`.
+Add the persona argument to `rep_reply`, write the roster, run N calls per
+persona per patient profile. Keep trajectories reaching `DealReached` **with an
+acceptable deal** (not just any deal — see Metrics).
 
-This is rejection sampling / behavior cloning on successes: train only on
-lines that actually led to a deal. No real call recordings needed — which
-matters, because real hospital billing calls are both scarce and legally
-fraught to collect.
+Target ~300–800 winning `(tactic_label, transcript_so_far, line)` triples.
+Cost is a few dollars on Sonnet; run it in the background.
 
-- Vary the rep: seed `rep_reply` with a persona (hard-liner, sympathetic,
-  by-the-book, new hire) so trajectories aren't all the same shape.
-- Target ~300–800 accepted `(tactic_label, transcript_so_far) → agent_line`
-  pairs. Small, but LoRA on a 7B needs far less than people expect.
-- Emit JSONL from a graph query over `CallRecord` — the capture layer means
-  this is a read, not a separate pipeline.
+### Phase 2 — mine and optimize (~45 min)
 
-Cost check: each simulated call is ~3 LLM calls/turn × ~4 turns. A few hundred
-calls on Sonnet is single-digit dollars. Run it in the background while Phase 2
-tooling is set up.
+Two levers, both swept against held-out deal quality:
 
-### Phase 2 — train (~1–1.5 hr, mostly unattended)
+1. **Exemplar selection** — which k lines each node keeps. Prefer lines from
+   calls that closed against *harder* personas, and diversify: k lines that
+   all say the same thing teach nothing.
+2. **`sem` instruction text** — a handful of variants, scored on the same
+   held-out set.
 
-LoRA on a small instruct model — Qwen2.5-7B-Instruct or Llama-3.1-8B-Instruct.
-On an M-series Mac, use MLX or unsloth; if it's slow, rent an A100 hour.
+### Phase 3 — eval (the part judges care about)
 
-Keep it boring: rank 16, 2–3 epochs, hold out 10% for eval. The goal is not a
-better base model, it's a model that has internalized *this* negotiation
-register — persistent, specific, never pushy, always naming a concrete program.
-
-### Phase 3 — serve and swap (~30 min)
-
-`ollama create jaul-negotiator -f Modelfile` from the merged adapter, then the
-two-line glob swap above. byLLM talks to Ollama natively (`ollama/<name>`), no
-API key, no network.
-
-Keep a `JAUL_NEGOTIATOR_MODEL` env var so the demo can flip between base and
-tuned live. That flip *is* the demo moment.
-
-### Phase 4 — evaluation (the part judges care about)
-
-Run K held-out negotiations per arm against the same seeded rep personas,
-tagging `CallRecord.model_tag`. Report:
-
-| Metric | Why |
-|---|---|
-| **Deal rate** | The headline. Did SFT make it close more? |
-| Turns to deal | Efficiency — fewer turns is a better call. |
-| Escalation rate | Did it learn *when* to go over the rep's head? |
-| Programs named per call | Proxy for specificity vs. generic politeness. |
-
-All four are graph queries over `CallRecord`. Ship the harness even if
-training underdelivers — "we built the eval and the tuned model didn't beat
-base on deal rate" is an honest, respectable result, and it's still a working
-`by llm()`-swappable pipeline.
+K calls per arm against **held-out** personas, tagging `CallRecord.arm`.
 
 ---
 
-## Scope warning
+## Metrics
 
-The hackathon deadline is **today** (JacHacks SF, 2026-07-26). Phases 0, 1, and
-4 are the ones that are certain to land and are individually demoable. Phase 2
-is the one that can eat unbounded time — GPU setup, dependency hell, a training
-run that doesn't converge.
+**Deal rate alone is gameable** — the Upseller persona proves it. Report:
 
-**If Phase 2 is at risk, cut it, not the others.** A capture layer + self-play
-data generator + eval harness with a documented "tuned model pending" is a
-complete, coherent story. A half-finished training run with no eval is not.
+| Metric | Why |
+|---|---|
+| **Good-deal rate** | Deals excluding predatory terms. **The headline.** |
+| Raw deal rate | Report alongside. A gap between the two *is* a finding. |
+| Turns to deal | Efficiency. |
+| Escalation rate | Did it learn *when* to go over the rep's head? |
+| Programs named per call | Specificity vs. generic politeness. |
+| False-accept rate | How often `classify_response` calls a non-commitment `ACCEPTED`. |
 
-Fallback that preserves the demo: instead of weight-level SFT, do
-**prompt-level distillation** — mine the winning trajectories for the highest-
-value few-shot exemplars and inject them into `generate_line`'s `sem`. Same
-data pipeline, same eval harness, same before/after chart, ~20 minutes instead
-of ~2 hours. Weaker claim, but it is honestly describable as
-"trajectory-mined" rather than "fine-tuned" — do not call it SFT on Devpost.
+All of these are graph queries over `CallRecord`.
+
+---
+
+## Scope
+
+Deadline is **today** (JacHacks SF, 2026-07-26). Phases 0, 1, and 3 are the
+certain-to-land ones and each is independently demoable. Phase 2 is where time
+disappears into sweeping variants.
+
+**If time runs short, cut the sweep, not the eval.** Hand-pick exemplars from
+the winning trajectories and report the harness honestly. A capture layer + an
+adversarial persona simulator + an eval showing where the agent breaks is a
+complete story on its own — arguably a more interesting one than a marginal
+deal-rate bump.
 
 ---
 
 ## Merge surface
 
-Files this branch owns: `graph.jac` (adds `CallRecord`), `agent.jac`
-(the `negotiator` glob + `generate_line` binding), plus new `sft/` tooling.
+Owned here: `graph.jac` (`Tactic.exemplars`, `CallRecord`), `agent.jac`
+(`rep_reply` persona arg, `generate_line` exemplar retrieval), new `sim/`.
 
-Conflict risk is low but real:
-- **Voice workstream** touches `telephony/transport.py` and `server.py` — no
-  overlap.
-- **Patient-context workstream** likely changes `generate_line`'s *signature*
-  (adding a patient-context arg). That's the one genuine collision. Agree
-  early that they own the signature and we own the binding, and rebase often.
+- **Voice** touches `telephony/transport.py` / `server.py` — no overlap.
+- **Patient context** will change `generate_line`'s **signature**. That's the
+  one real collision. They own the signature, we own the body and the
+  retrieval. Agree on it before either side writes code, and rebase often.
 
-Rebase on `main` before the demo — `main` moved three times today already.
+Rebase on `main` before the demo — it moved three times today already.
