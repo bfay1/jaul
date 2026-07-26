@@ -59,9 +59,36 @@ NOT a Python-with-if/else port. Core design:
 ## Jac syntax notes
 
 Jac is new enough that AI assistants (including you) may hallucinate syntax
-from outdated or nonexistent versions. Reference:
-https://docs.jaseci.org/learn/tools/llmdocs/ (llmdocs-jaseci-mini_v3.txt)
-If uncertain about syntax, flag it rather than guessing.
+from outdated or nonexistent versions. The authoritative reference ships
+inside the compiler — use it, don't guess:
+
+- `jac guide` — list every guide
+- `jac guide jac-core-cheatsheet` — baseline syntax; read this first
+- `jac guide jac-walker-patterns` / `jac guide jac-node-edge-patterns` — OSP
+- `jac guide jac-by-llm` — `by llm()`, `sem` strings, MockLLM
+- `jac guide --search <keyword>` — find a guide by topic
+
+Then verify with `jac check main.jac`. If still uncertain, flag it rather
+than guessing.
+
+## Toolchain — pinned, do not casually upgrade
+
+This project runs on the **`jaclang` 0.16.7 pip package** in a local venv
+(`python3 -m venv jac-env && pip install -r requirements.txt`), NOT the newer
+self-contained `jac` binary from the curl installer. Both exist; they are not
+interchangeable, and the whole team must be on the same one.
+
+The pin is load-bearing: `telephony/core.py` does `import jaclang` and
+`from jaclang.lib import spawn`, which requires jaclang importable from an
+*external* Python. The binary embeds its own Python and has no such package,
+so `python -m telephony.dial` / `uvicorn telephony.server:app` would break.
+
+Two things also differ under the binary and will silently mislead you:
+`byllm` imports as `jaclang.byllm.lib` rather than `byllm.lib`, and `global`
+is not a statement (0.16.7 accepts `global llm;`; the binary rejects it).
+
+If a version bump is ever wanted, it is a team decision and requires porting
+the telephony transport — not a one-line edit.
 
 ## Submission requirements (JacHacks SF)
 
