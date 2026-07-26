@@ -470,3 +470,66 @@ Owned here: `graph.jac` (canonical nodes, `Tactic.exemplars`, `CallRecord`),
   (§9) — agree ownership before either side starts.
 
 Rebase on `main` before the demo.
+
+---
+
+## Results (run 2026-07-26)
+
+Held-out personas, 24 calls per arm. `base` = no playbook; `tuned` = the
+9 distilled rules loaded onto the three traversable tactic nodes. Everything
+else identical.
+
+| | good-deal rate |
+|---|---|
+| base | 11/24 — 45.8% |
+| tuned | 13/24 — 54.2% |
+| | **+8.4 pp** |
+
+Per persona, which matters more than the aggregate:
+
+| Persona | base | tuned | delta |
+|---|---|---|---|
+| upseller | 4/8 (50%) | 8/8 (100%) | +50 pp |
+| false_yes | 1/8 (12.5%) | 2/8 (25%) | +12.5 pp |
+| runaround | 6/8 (75%) | 3/8 (37.5%) | **−37.5 pp** |
+
+**Read this carefully before quoting the headline.** +8.4 pp is a two-call
+difference on n=24 — directionally positive, nowhere near significant. The gain
+is almost entirely the Upseller, where the playbook's "refuse deflection, insist
+on the policy route" rules directly counter that persona's behavior; all 8 of
+those deals scored *good*, meaning the agent turned down the 24% APR plan and
+took charity care or interest-free terms instead.
+
+Runaround regressed hard, and that is the useful signal. The playbook pushes
+"cite the policy and open the application now", which is the wrong instinct
+against a rep whose entire game is transferring you elsewhere. That persona
+needs "hold the line, refuse the handoff", and no rule encodes it.
+
+Caveat on provenance: the last 3 tuned upseller calls were re-run on a fresh
+graph after `jac clean --all` destroyed the original records (it clears
+`.jac/data`, not just the compile cache — use `jac clean --force` during an
+experiment). Same playbook, personas, profiles and models; not the identical
+run.
+
+### What came before
+
+| Approach | vs baseline |
+|---|---|
+| Verbatim exemplars | 8.3% → 0.0% — harmful |
+| Distilled playbooks | 45.8% → 54.2% — directionally positive |
+
+Verbatim lines carried other patients' figures, one call's plan terms, and
+unfilled placeholders into unrelated calls. Distillation plus a code-enforced
+contamination guard removed that and turned a regression into a modest gain.
+
+Also worth recording: fixing the eval set moved the baseline more than either
+tuning method did — 8.3% to 45.8% on the *same policy*, purely by giving the
+held-out personas concession paths. Two of the three had been unwinnable by
+construction, so nothing could be measured at all.
+
+### Next experiment
+
+Per-persona ablation. The Runaround result says the playbook should be
+conditional on *what kind of resistance* the rep is showing. The graph already
+expresses that: rules could be keyed to the edge that brought the walker to a
+node, not just to the node itself.
