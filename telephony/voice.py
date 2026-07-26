@@ -21,6 +21,14 @@ _ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 _DEFAULT_MODEL_ID = "eleven_flash_v2_5"
 _TIMEOUT_SECONDS = 10
 
+# Twilio phone calls are 8kHz mu-law under the hood. ElevenLabs defaults to a
+# 44.1kHz MP3, which Twilio then has to transcode for every turn - exactly the
+# choppy, cutting-in-and-out artifacts a mismatched-format transcode produces.
+# Asking ElevenLabs for ulaw_8000 directly means Twilio's <Play> gets audio
+# already in its native telephony format, with no transcoding step at all.
+_OUTPUT_FORMAT = "ulaw_8000"
+_CONTENT_TYPE = "audio/ulaw"
+
 # clip_id -> (audio_bytes, content_type). In-memory only: fine for a
 # single-process demo server (same assumption server.py's `_sessions` dict
 # already makes) since uvicorn's default single-worker event loop means no
@@ -54,10 +62,10 @@ def synthesize(text: str) -> str | None:
     try:
         resp = requests.post(
             _ELEVENLABS_TTS_URL.format(voice_id=voice_id),
+            params={"output_format": _OUTPUT_FORMAT},
             headers={
                 "xi-api-key": api_key,
                 "Content-Type": "application/json",
-                "Accept": "audio/mpeg",
             },
             json={"text": text, "model_id": model_id},
             timeout=_TIMEOUT_SECONDS,
@@ -69,7 +77,7 @@ def synthesize(text: str) -> str | None:
         return None
 
     clip_id = uuid.uuid4().hex
-    _clips[clip_id] = (resp.content, "audio/mpeg")
+    _clips[clip_id] = (resp.content, _CONTENT_TYPE)
     _evict_if_over_capacity()
     return clip_id
 
