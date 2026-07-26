@@ -1,0 +1,14 @@
+[project]
+name = "jachacks"
+version = "0.1.0"
+description = "Command-line Jac project"
+entry-point = "main.jac"
+kind = "cli"
+jac-version = "0.16.7"
+
+[dependencies]
+byllm = "==0.6.19"
+litellm = "==1.82.6"
+
+[dev-dependencies]
+watchdog = ">=3.0.0"
