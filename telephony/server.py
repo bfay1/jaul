@@ -18,8 +18,10 @@ Twilio flow:
                 --> <Hangup/> when the negotiation reaches deal/dead-end.
 """
 import os
+from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import HTMLResponse
 
 from telephony.core import NegotiationSession
 from telephony.transport import TurnBasedTransport
@@ -33,6 +35,13 @@ app = FastAPI(title="jaul telephony")
 # ever scale this out.
 _sessions: dict[str, NegotiationSession] = {}
 _transport = TurnBasedTransport()
+
+# The most recently completed call's final status, so /status (and the /live
+# page watching it) still shows the outcome after the session is popped below
+# - a demo screen shouldn't go blank the instant the deal is reached.
+_last_status: dict | None = None
+
+_LIVE_HTML_PATH = Path(__file__).parent / "live.html"
 
 
 def _public_base_url(request: Request) -> str:
@@ -52,6 +61,20 @@ def _turn_url(request: Request) -> str:
 
 def _audio_url(request: Request, clip_id: str) -> str:
     return f"{_public_base_url(request)}/audio/{clip_id}"
+
+
+def _session_status(call_sid: str, session: NegotiationSession) -> dict:
+    return {
+        "active": session.status == "in_progress",
+        "call_sid": call_sid,
+        "hospital": session.hospital_name,
+        "patient": session.patient_name,
+        "status": session.status,
+        "turns": session.turns,
+        "last_intent": session.last_intent,
+        "last_move": session.last_move,
+        "transcript": list(session.transcript),
+    }
 
 
 def _render(request: Request, line: str, status: str) -> tuple[str, str]:
@@ -94,8 +117,27 @@ async def twiml_turn(request: Request) -> Response:
 
     ctype, body = _render(request, line, status)
     if status != "in_progress":
+        global _last_status
+        _last_status = _session_status(call_sid, session)
         _sessions.pop(call_sid, None)
     return Response(content=body, media_type=ctype)
+
+
+@app.get("/status")
+def status() -> dict:
+    """Live state of the most recent call, for the /live demo page to poll."""
+    if _sessions:
+        call_sid = next(reversed(_sessions))
+        return _session_status(call_sid, _sessions[call_sid])
+    if _last_status is not None:
+        return _last_status
+    return {"active": False}
+
+
+@app.get("/live", response_class=HTMLResponse)
+def live_page() -> HTMLResponse:
+    """A polling page that renders /status live - open this on a demo screen."""
+    return HTMLResponse(_LIVE_HTML_PATH.read_text())
 
 
 @app.get("/audio/{clip_id}")

@@ -45,6 +45,16 @@ class NegotiationSession:
         self.transcript: list[str] = []
         self.status: str = "in_progress"
         self.turns: int = 0
+        self.last_intent: str = ""   # this turn's RepIntent classification, "" before any reply
+        self.last_move: str = ""     # this turn's chosen TacticMove, "" if terminal or none yet
+
+    @property
+    def hospital_name(self) -> str:
+        return self._hospital.name
+
+    @property
+    def patient_name(self) -> str:
+        return self._patient.name if self._patient is not None else "the patient"
 
     def start(self) -> tuple[str, str]:
         """Begin the call: the agent's opening line. Returns (line, status)."""
@@ -74,6 +84,8 @@ class NegotiationSession:
 
         self.transcript = list(w.transcript)
         self.status = w.status
+        self.last_intent = w.last_intent
+        self.last_move = w.last_move
         if w.end_node is not None:
             self._node = w.end_node
         return w.agent_line, w.status
