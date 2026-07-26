@@ -87,6 +87,63 @@ node CallRecord {
 }
 
 
+# --- Exemplar transfer -------------------------------------------------------
+# Graph-native persistence works under `jac run` / `jac test` but NOT when Jac
+# is driven from plain Python (verified: the Jac path accumulates across runs,
+# the Python path starts fresh every time and writes land inconsistently).
+# Telephony is Python - uvicorn/FastAPI - so a live call would otherwise begin
+# with empty exemplar banks and learn nothing.
+#
+# These two functions bridge that gap. The learning loop runs under `jac run`,
+# persists natively, and exports; the telephony process imports at startup and
+# gets the learned banks in memory for every call it serves.
+
+import json;
+import os;
+
+"""Write the canonical graph's exemplar banks to a JSON file."""
+def save_exemplars(path: str) -> int {
+    opening = get_or_build_call_graph();
+    banks: dict = {};
+    total = 0;
+    tactics: list[Tactic] = [
+        opening, [opening ->:SoftNo:->][0], [opening ->:NeedsEscalation:->][0]
+    ];
+    for tactic in tactics {
+        banks[tactic.label] = list(tactic.exemplars);
+        total += len(tactic.exemplars);
+    }
+    with open(path, "w") as f {
+        json.dump(banks, f, indent=2);
+    }
+    return total;
+}
+
+"""Load exemplar banks from a JSON file onto the canonical graph.
+
+Returns the number of lines loaded; 0 if the file does not exist, so a fresh
+checkout runs fine with no exemplars rather than crashing.
+"""
+def load_exemplars(path: str) -> int {
+    if not os.path.exists(path) {
+        return 0;
+    }
+    with open(path) as f {
+        banks = json.load(f);
+    }
+    opening = get_or_build_call_graph();
+    total = 0;
+    tactics: list[Tactic] = [
+        opening, [opening ->:SoftNo:->][0], [opening ->:NeedsEscalation:->][0]
+    ];
+    for tactic in tactics {
+        tactic.exemplars = list(banks.get(tactic.label, []));
+        total += len(tactic.exemplars);
+    }
+    return total;
+}
+
+
 """Get the canonical tactic graph, building it once if it does not exist.
 
 Idempotent by design. Every call - simulated or live - spawns against the

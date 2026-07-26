@@ -101,6 +101,28 @@ def test_hard_no_still_ends_the_call():
     assert session.status == "dead_end", session.status
 
 
+def test_learned_exemplars_reach_a_live_call():
+    # The bridge that makes a live call benefit from the learning loop: the
+    # loop exports banks under `jac run`, this process imports them, and the
+    # walker hands the current node's bank to the generator via incl_info.
+    import json, os, tempfile
+
+    path = os.path.join(tempfile.mkdtemp(), "exemplars.json")
+    with open(path, "w") as f:
+        json.dump({"opening": ["LEARNED-OPENING-LINE"],
+                   "counter_offer": [], "escalation": []}, f)
+
+    assert core.load_learned_exemplars(path) == 1
+    _run(
+        gen_outputs=["Hi, are there any financial assistance programs?"],
+        fast_outputs=[agent.RepIntent.HARD_NO],
+        rep_lines=["No."],
+    )
+    assert agent.exemplar_ctx["exemplars"] == ["LEARNED-OPENING-LINE"]
+
+    core.load_learned_exemplars(os.path.join(tempfile.mkdtemp(), "absent.json"))
+
+
 def test_completed_live_call_is_persisted():
     # A finished live call must leave a queryable CallRecord, same as a
     # simulated one - that record is the training data.

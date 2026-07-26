@@ -4,3 +4,8 @@ jac-env/
 jac.local.toml
 __pycache__/
 *.pyc
+
+# Learning-loop artifacts: exported exemplar banks are a build product of the
+# self-play loop, and live call logs may contain call content.
+exemplars.json
+live_calls.jsonl

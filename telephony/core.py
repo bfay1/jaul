@@ -23,6 +23,29 @@ from jaclang.lib import spawn
 # Safety cap: even a rep who loops forever gets a graceful hangup.
 MAX_TURNS = 12
 
+# Jac's graph-native persistence works under `jac run` / `jac test` but not
+# when Jac is driven from plain Python, which is what uvicorn does. So this
+# process starts with an empty tactic graph every boot, and the exemplar banks
+# the learning loop produced would be lost. Load them from the file the loop
+# exports (see graph.save_exemplars) so live calls speak with what was learned.
+EXEMPLAR_PATH = os.path.join(_ROOT, "exemplars.json")
+
+# Live-call records can't persist to the graph from this process either, so
+# they're appended here instead - the learning loop can mine them later.
+CALL_LOG_PATH = os.path.join(_ROOT, "live_calls.jsonl")
+
+
+def load_learned_exemplars(path: str = EXEMPLAR_PATH) -> int:
+    """Apply exported exemplar banks to this process's tactic graph.
+
+    Returns the number of lines loaded; 0 when the file is absent, so a fresh
+    checkout serves calls normally with no exemplars rather than failing.
+    """
+    return _graph.load_exemplars(path)
+
+
+_LOADED = load_learned_exemplars()
+
 
 class NegotiationSession:
     """One live call. Not thread-safe; one session per CallSid."""
@@ -77,7 +100,36 @@ class NegotiationSession:
         self.status = w.status
         if w.end_node is not None:
             self._node = w.end_node
+
+        if self.status != "in_progress":
+            self._log_call()
         return w.agent_line, w.status
+
+    def _log_call(self) -> None:
+        """Append the finished call to the JSONL log.
+
+        The walker also writes a CallRecord to the graph, but that write does
+        not survive this process (see EXEMPLAR_PATH note above), so this file
+        is the durable copy the learning loop can mine.
+        """
+        import json
+
+        record = {
+            "call_id": self.call_id,
+            "source": "live",
+            "transcript": self.transcript,
+            "agent_lines": self.agent_lines,
+            "tactic_path": self.tactic_path,
+            "edge_path": self.edge_path,
+            "outcome": self.status,
+            "deal_terms": self.deal_terms,
+        }
+        try:
+            with open(CALL_LOG_PATH, "a") as f:
+                f.write(json.dumps(record) + "\n")
+        except OSError:
+            # A demo call must not die because the log is unwritable.
+            pass
 
 
 def use_mock_llm(gen_outputs: list, fast_outputs: list) -> None:
