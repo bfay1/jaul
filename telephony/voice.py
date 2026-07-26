@@ -19,7 +19,15 @@ import requests
 
 _ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 _DEFAULT_MODEL_ID = "eleven_flash_v2_5"
-_TIMEOUT_SECONDS = 10
+
+# Twilio hard-caps a webhook response at 15s total. Each /twiml/turn request
+# already makes two sequential LLM calls (classify_response, generate_line)
+# before it can even attempt this one - so a generous timeout here risks
+# eating most of that 15s budget by itself if ElevenLabs is ever slow,
+# tripping Twilio's own timeout (error 11200) and ending the call with
+# "application error". A tight timeout means we fail fast and fall back to
+# the Polly <Say> voice for that turn instead of running out the clock.
+_TIMEOUT_SECONDS = 4
 
 # `<Play>` fetches a self-contained audio FILE and needs to detect its own
 # format - it is NOT the same mechanism as Twilio Media Streams (a WebSocket
