@@ -20,7 +20,14 @@ with entry:__main__ {
     result = opening spawn NegotiationAgent(
         persona="A by-the-book billing rep with limited approval authority who knows the hospital has assistance programs but sticks closely to policy language.",
         call_id="cli-run",
-        arm="base"
+        arm="base",
+        # Real 501(r) grounding: a household of three on $48,000 sits at 176%
+        # of the 2026 federal poverty level, under Mass General Brigham's
+        # published 300% threshold. See fap.jac / data/fap_corpus.json.
+        annual_income=48000.0,
+        household_size=3,
+        bill_amount=9000.0,
+        hospital_key="mass_general_brigham"
     );
 
     print("--- call transcript ---");

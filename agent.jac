@@ -12,6 +12,7 @@ import from graph {
     SoftNo, Stonewalling, NeedsEscalation, Accepted, HardNo,
     CallRecord, get_or_build_call_graph
 }
+import from fap { assistance_context }
 
 # --- Model config ------------------------------------------------------------
 # Auth comes from the ANTHROPIC_API_KEY env var (see .env / .env.example) -
@@ -98,7 +99,7 @@ sem extract_commitment.response = "The rep's most recent spoken line in the call
 
 
 def generate_line(tactic_label: str, transcript: list[str]) -> str by llm(incl_info=exemplar_ctx);
-sem generate_line = "You are a calm, persistent patient advocate on a phone call with a hospital billing department. Your goal is to surface income-based discounts, charity care programs, and interest-free payment plans the patient may qualify for, without being pushy. Given the current negotiation tactic phase and the call transcript so far, draft the agent's single next spoken line - polite, concise, and fitting the phase.";
+sem generate_line = "You are a calm, persistent patient advocate on a phone call with a hospital billing department. Your goal is to surface income-based discounts, charity care programs, and interest-free payment plans the patient may qualify for, without being pushy. Given the current negotiation tactic phase and the call transcript so far, draft the agent's single next spoken line - polite, concise, and fitting the phase. When assistance facts are supplied, cite them specifically - the patient's position as a percentage of the federal poverty level, the hospital's own published threshold, and named programs - because a specific, checkable claim is far harder to deflect than a general question. Never state a figure that was not supplied to you, and never overstate the patient's hardship: claims must be limited to the facts given.";
 sem generate_line.tactic_label = "The current negotiation phase: 'opening' (first ask about assistance programs), 'counter_offer' (proposing a specific discount or payment plan), or 'escalation' (asking for a supervisor).";
 sem generate_line.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines.";
 
@@ -142,6 +143,17 @@ walker NegotiationAgent {
     has deal_terms: str = "";
     has record_call: bool = True;
 
+    # Patient facts used to ground what the agent claims. The seam is
+    # deliberately inert until `household_size` is set - the patient-context
+    # workstream owns where these come from, and nothing here should compete
+    # with it. Set them and the agent starts citing real 501(r) thresholds
+    # instead of asking open-endedly whether programs exist.
+    has annual_income: float = 0.0;
+    has household_size: int = 0;
+    has bill_amount: float = 0.0;
+    has hospital_key: str = "";
+    has state: str = "";
+
     can negotiate with Opening | CounterOffer | Escalation entry {
         self.turns += 1;
         if self.turns > self.max_turns {
@@ -159,6 +171,7 @@ walker NegotiationAgent {
         # re-reads this dict per call, so the walker's position decides which
         # examples the model sees - the traversal IS the retrieval.
         exemplar_ctx["exemplars"] = here.exemplars;
+        exemplar_ctx["assistance"] = self.assistance_facts();
         line = generate_line(here.label, self.transcript);
         self.transcript.append("AGENT: " + line);
         self.agent_lines.append(line);
@@ -175,6 +188,31 @@ walker NegotiationAgent {
         visit [here ->:edge_type:->] else {
             self.finish(here, "dead_end", "no " + intent.name + " edge out of " + here.label);
         }
+    }
+
+    """Real 501(r) facts for this patient, or empty when none are supplied.
+
+    Empty is the honest default: with no household size we cannot compute a
+    poverty-level position, and the agent should ask openly rather than
+    invent a threshold.
+    """
+    def assistance_facts() -> dict {
+        if self.household_size <= 0 {
+            return {};
+        }
+        a = assistance_context(
+            self.annual_income, self.household_size,
+            self.bill_amount, self.hospital_key, self.state
+        );
+        return {
+            "fpl_percent": a.fpl_pct,
+            "poverty_line_for_household": a.poverty_line,
+            "hospital": a.hospital,
+            "eligibility": a.qualifies_hint,
+            "hardship": a.hardship_hint,
+            "policy_quote": a.quotable,
+            "programs_to_name": a.levers
+        };
     }
 
     """Classify the rep's line, then gate ACCEPTED behind real terms.
@@ -487,6 +525,38 @@ test "a completed call is persisted as a queryable CallRecord" {
     assert saved[0].arm == "base";
     assert saved[0].edge_path == ["HARD_NO"];
     assert len(saved[0].agent_lines) == 1;
+}
+
+test "real 501(r) facts reach the generator when patient details are supplied" {
+    global llm;
+    global fast;
+    llm = MockLLM(model_name="mockllm", config={"outputs": [OPENER]});
+    fast = MockLLM(model_name="mockllm", config={"outputs": ["No.", RepIntent.HARD_NO]});
+
+    opening = get_or_build_call_graph();
+    opening spawn NegotiationAgent(
+        record_call=False,
+        annual_income=48000.0, household_size=3,
+        bill_amount=9000.0, hospital_key="mass_general_brigham"
+    );
+
+    facts = exemplar_ctx["assistance"];
+    assert facts["fpl_percent"] == 176;
+    assert facts["hospital"] == "Mass General Brigham";
+    assert "60% or more" in facts["policy_quote"];
+    assert len(facts["programs_to_name"]) > 0;
+}
+
+test "no patient details means no invented thresholds" {
+    global llm;
+    global fast;
+    llm = MockLLM(model_name="mockllm", config={"outputs": [OPENER]});
+    fast = MockLLM(model_name="mockllm", config={"outputs": ["No.", RepIntent.HARD_NO]});
+
+    opening = get_or_build_call_graph();
+    opening spawn NegotiationAgent(record_call=False);
+
+    assert exemplar_ctx["assistance"] == {};
 }
 
 test "exemplars on a node reach the generator via incl_info" {
