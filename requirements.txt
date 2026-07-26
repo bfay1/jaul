@@ -12,8 +12,8 @@ twilio==9.10.9
 # Required by FastAPI's request.form(); Twilio POSTs form-encoded webhooks, so
 # without this BOTH /twiml/ endpoints 500 on the first request of every call.
 python-multipart==0.0.32
-# ElevenLabs TTS (optional): direct REST call from telephony/voice.py, no
-# elevenlabs SDK — matches transport.py's minimal-dependency philosophy.
+# ElevenLabs TTS (optional): direct REST call from telephony/voice.jac, no
+# elevenlabs SDK — matches transport.jac's minimal-dependency philosophy.
 # Already a transitive dep of twilio, but pinned explicitly so a future twilio
 # version bump can't silently change it.
 requests==2.34.2

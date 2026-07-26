@@ -5,31 +5,42 @@ whatever the phone layer needs to send back. Keeping this behind an interface
 is the whole point of the design: the turn-based demo and a future real-time
 streaming implementation share the same NegotiationSession core and differ only
 here.
+
+`class` (not `obj`) because Transport subclasses Python's ABC - a
+metaclass-driven type, exactly the case jac-python-interop's `class` archetype
+guidance covers (Pygments lexers, ORM base classes, ...): `obj` is
+dataclass-machinery-backed, so its fields would be invisible to ABCMeta's
+abstract-method bookkeeping. Every `class` method needs `self` explicitly
+declared and typed (verified: unlike `obj`, it is NOT bound automatically -
+omitting it compiles clean but dies at runtime with `NameError: name 'self'
+is not defined` the moment the body touches `self.anything`).
 """
-from abc import ABC, abstractmethod
-from xml.sax.saxutils import escape
+import from abc { ABC, abstractmethod }
+import from xml.sax.saxutils { escape }
 
 
-class Transport(ABC):
+"""Return (content_type, body) to send back for this turn.
+
+`audio_url`, if given, is pre-synthesized audio (e.g. ElevenLabs) that should
+be played instead of speaking `agent_line` via the built-in voice. Optional
+and defaulted so existing callers are unaffected.
+"""
+class Transport(ABC) {
     @abstractmethod
     def render(
-        self,
+        self: Transport,
         agent_line: str,
         status: str,
         turn_action_url: str,
-        audio_url: str | None = None,
-    ) -> tuple[str, str]:
-        """Return (content_type, body) to send back for this turn.
-
-        `audio_url`, if given, is pre-synthesized audio (e.g. ElevenLabs) that
-        should be played instead of speaking `agent_line` via the built-in
-        voice. Optional and defaulted so existing callers are unaffected.
-        """
-        ...
+        audio_url: str | None = None
+    ) -> tuple[str, str] {
+        raise NotImplementedError;
+    }
+}
 
 
-class TurnBasedTransport(Transport):
-    """Twilio <Say> + <Gather input="speech"> — one rep turn per webhook.
+class TurnBasedTransport(Transport) {
+    """Twilio <Say> + <Gather input="speech"> - one rep turn per webhook.
 
     This is option 1: the agent speaks a line, Twilio transcribes the rep's
     spoken reply and POSTs it to the turn URL, and we advance one hop. TwiML is
@@ -38,60 +49,65 @@ class TurnBasedTransport(Transport):
     outbound call (see telephony.dial).
     """
 
-    def __init__(
-        self,
+    def init(
+        self: TurnBasedTransport,
         voice: str = "Polly.Joanna",
         speech_timeout: str = "auto",
-        language: str = "en-US",
-    ) -> None:
-        self.voice = voice
-        self.speech_timeout = speech_timeout
-        self.language = language
+        language: str = "en-US"
+    ) {
+        self.voice = voice;
+        self.speech_timeout = speech_timeout;
+        self.language = language;
+    }
 
     def render(
-        self,
+        self: TurnBasedTransport,
         agent_line: str,
         status: str,
         turn_action_url: str,
-        audio_url: str | None = None,
-    ) -> tuple[str, str]:
-        if audio_url is not None:
-            voice_element = f"<Play>{escape(audio_url)}</Play>"
-        else:
-            voice_element = f'<Say voice="{escape(self.voice, {chr(34): "&quot;"})}">{escape(agent_line)}</Say>'
-        url = escape(turn_action_url, {chr(34): "&quot;"})
-        if status == "in_progress":
+        audio_url: str | None = None
+    ) -> tuple[str, str] {
+        if audio_url is not None {
+            voice_element = f"<Play>{escape(audio_url)}</Play>";
+        } else {
+            voice_element = f'<Say voice="{escape(self.voice, {chr(34): "&quot;"})}">{escape(agent_line)}</Say>';
+        }
+        url = escape(turn_action_url, {chr(34): "&quot;"});
+        if status == "in_progress" {
             body = (
                 '<?xml version="1.0" encoding="UTF-8"?>'
                 "<Response>"
                 f'<Gather input="speech" action="{url}" method="POST" '
-                f'speechTimeout="{self.speech_timeout}" language="{self.language}">'
+                f"speechTimeout=\"{self.speech_timeout}\" language=\"{self.language}\">"
                 f"{voice_element}"
                 "</Gather>"
                 # Rep said nothing within the gather: bounce back to reprompt.
                 f'<Redirect method="POST">{url}</Redirect>'
                 "</Response>"
-            )
-        else:
+            );
+        } else {
             body = (
                 '<?xml version="1.0" encoding="UTF-8"?>'
                 f"<Response>{voice_element}<Hangup/></Response>"
-            )
-        return "application/xml", body
+            );
+        }
+        return ("application/xml", body);
+    }
+}
 
 
-class StreamingTransport(Transport):
-    """PLACEHOLDER for real-time Twilio Media Streams — option 2.
+class StreamingTransport(Transport) {
+    """PLACEHOLDER for real-time Twilio Media Streams - option 2.
 
     Media Streams opens a bidirectional WebSocket carrying raw call audio; you
     pair it with a streaming STT (rep audio -> text) and streaming TTS (agent
     text -> audio). Crucially, the negotiation core (NegotiationSession) does
     NOT change: you still call session.advance(transcribed_text) and speak
-    session's returned line — only the transport differs. To wire it up:
+    session's returned line - only the transport differs. To wire it up:
 
       1. Return `<Connect><Stream url="wss://.../media"/></Connect>` from the
          initial TwiML instead of <Gather>.
-      2. Add a WebSocket route in server.py that receives audio frames, runs
+      2. Add a WebSocket route in server.jac that receives audio frames, runs
          STT, calls session.advance(...), runs TTS, and streams frames back.
       3. Implement render() here for any mid-stream TwiML you need.
 
@@ -100,13 +116,15 @@ class StreamingTransport(Transport):
     """
 
     def render(
-        self,
+        self: StreamingTransport,
         agent_line: str,
         status: str,
         turn_action_url: str,
-        audio_url: str | None = None,
-    ) -> tuple[str, str]:
+        audio_url: str | None = None
+    ) -> tuple[str, str] {
         raise NotImplementedError(
             "StreamingTransport is the documented Media Streams seam (option 2); "
             "the working demo uses TurnBasedTransport."
-        )
+        );
+    }
+}

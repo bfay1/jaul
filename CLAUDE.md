@@ -68,6 +68,45 @@ inside the compiler — use it, don't guess:
 - `jac guide jac-by-llm` — `by llm()`, `sem` strings, MockLLM
 - `jac guide --search <keyword>` — find a guide by topic
 
+Verified gotchas from porting the whole `telephony/` package + `casefile.py`
+from Python to Jac (all confirmed via `jac check` + real runtime tests, not
+guessed):
+
+- **`self` is implicit in `obj`/`node`/`edge`/`walker` methods** (never
+  declare it) **but must be explicit and typed in a `class` archetype**
+  (`def foo(self: MyClass, ...)`) - `class` methods are NOT auto-bound the
+  way `obj` methods are; omitting it compiles clean but dies at runtime with
+  `NameError: name 'self' is not defined` the moment the body touches `self`.
+- **Single-quoted f-strings with 2+ interpolations that are each individually
+  adjacent to embedded literal `"` chars silently corrupt** (e.g.
+  `f'a="{x}" b="{y}"'` → `'a="X b=Y"'`, losing quote boundaries). One
+  interpolation is fine; the bug needs two-or-more, each quote-adjacent. Use
+  double-quoted f-strings with `\"` escapes instead when this shape shows up.
+- **`@contextlib.contextmanager`-decorated generator functions taking
+  parameters false-positive on `jac check`** at every `with fn(args) { }` call
+  site (`E1051: Too many positional arguments`) even though they run
+  correctly. Sidestep entirely with a plain `obj` implementing
+  `__enter__`/`__exit__` instead - checks clean, same runtime behavior.
+- **Relative imports (`import from .sibling { x }`) only work for files
+  imported as package modules**, not for a file directly targeted by
+  `jac run <path>` / `jac test <path>` (that file has "no known parent
+  package" at that point) - use the absolute form
+  (`import from telephony.sibling { x }`) for anything meant to be run/tested
+  directly.
+- **`spawn` works as the normal infix operator (`node spawn Walker(...)`)
+  inside a plain `obj` method**, not just inside `with entry` blocks or walker
+  abilities - confirmed directly. This is what let `telephony/core.jac`
+  become fully native Jac instead of a Python bridge through `jaclang.lib`.
+- **`by postinit` can run arbitrary side-effecting setup**, not just pure
+  field derivation from other fields - confirmed a postinit block calling an
+  external function with real side effects. Use it for a real constructor
+  body on an `obj` (there is no custom `__init__` on `obj`/`node`/`edge`/
+  `walker` - the constructor is always auto-generated from `has` fields).
+- Monkeypatching a strictly-typed external attribute (e.g. `requests.post` in
+  a test) fails direct assignment (`E1001: Cannot assign Any to <typed
+  function>`); `setattr(module, "name", fn)` sidesteps the same type check
+  entirely for the identical runtime effect.
+
 Then verify with `jac check main.jac`. If still uncertain, flag it rather
 than guessing.
 
@@ -78,10 +117,12 @@ This project runs on the **`jaclang` 0.16.7 pip package** in a local venv
 self-contained `jac` binary from the curl installer. Both exist; they are not
 interchangeable, and the whole team must be on the same one.
 
-The pin is load-bearing: `telephony/core.py` does `import jaclang` and
-`from jaclang.lib import spawn`, which requires jaclang importable from an
-*external* Python. The binary embeds its own Python and has no such package,
-so `python -m telephony.dial` / `uvicorn telephony.server:app` would break.
+The pin is load-bearing: `uvicorn telephony.server:app` starts a plain Python
+process that imports an all-Jac package (`telephony/*.jac`) via jaclang's
+`.pth`-installed import hook - which only exists if `jaclang` is pip-installed
+in *that* Python environment. The standalone binary embeds its own Python and
+has no such package, so uvicorn simply couldn't import `telephony.server` at
+all under it.
 
 Two things also differ under the binary and will silently mislead you:
 `byllm` imports as `jaclang.byllm.lib` rather than `byllm.lib`, and `global`

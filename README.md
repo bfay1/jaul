@@ -63,20 +63,31 @@ a different hospital, walks a different path and builds a different graph.
 | `graph.jac` | Graph shape only, no LLM logic: `Tactic`/`Opening`/`TacticStep`/`DealReached`/`DeadEnd` nodes, typed edges, `start_call()`; `Hospital`/`CallOutcome` (cross-call learning) and `ProgramKnowledge` (real assistance-program facts) |
 | `agent.jac` | The intelligence: `RepIntent` + `TacticMove` enums, the `by llm()` functions (`classify_response`, `choose_next_tactic`, `PatientCase.generate_line`, `rep_reply`), the graph-building helpers (`advance_tactic`, `reach_terminal`), and the walkers (`NegotiationAgent` for full-loop runs, `NegotiationTurn` for one-hop-per-webhook telephony) + MockLLM tests |
 | `main.jac` | Thin entry point wiring it together; also emits `call_graph.dot` after each run |
-| `casefile.py` | Loads a markdown patient case file into agent context (`--case`); also reads `--hospital` |
+| `casefile.jac` | Loads a markdown patient case file into agent context (`--case`); also reads `--hospital` |
 | `cases/` | Example patient case files (markdown) |
-| `telephony/` | Python transport that carries a live phone call to the Jac core (see below) |
+| `telephony/` | The transport that carries a live phone call to the Jac core (see below) |
 
-The `telephony/` package is deliberately thin — **all negotiation logic stays
-in Jac.** Python only handles the phone:
+**Essentially the entire project is Jac** — including telephony. The one
+exception is `telephony/__init__.py`, which stays `.py` only because Python's
+package system specifically requires that exact filename to mark a directory
+importable; it holds no logic, just a docstring. Third-party frameworks
+(FastAPI's `@app.post(...)` decorators, ElevenLabs/Twilio's REST clients) work
+directly on Jac functions via normal Python interop — no bridging layer needed:
 
 | File | Role |
 |---|---|
-| `telephony/core.py` | `NegotiationSession` — drives the Jac `NegotiationTurn` walker one turn at a time (Jac library mode) |
-| `telephony/transport.py` | `Transport` interface — `TurnBasedTransport` (Twilio Say+Gather) today, `StreamingTransport` (Media Streams) documented as a swap-in |
-| `telephony/server.py` | FastAPI webhook app Twilio drives (`/twiml/start`, `/twiml/turn`) |
-| `telephony/dial.py` | Places the outbound call (real Twilio; behind env config) |
-| `telephony/test_flow.py` | Offline tests of the whole call flow — no Twilio/network/key |
+| `telephony/core.jac` | `NegotiationSession` — drives the `NegotiationTurn` walker one turn at a time, natively (`spawn`/`root`/`++>` work directly here, not through a Python bridge) |
+| `telephony/transport.jac` | `Transport` interface — `TurnBasedTransport` (Twilio Say+Gather) today, `StreamingTransport` (Media Streams) documented as a swap-in |
+| `telephony/server.jac` | FastAPI webhook app Twilio drives (`/twiml/start`, `/twiml/turn`) — plain `@app.post(...)` decorators on async Jac functions |
+| `telephony/voice.jac` | ElevenLabs TTS — opt-in, never on the critical path |
+| `telephony/dial.jac` | Places the outbound call (real Twilio; behind env config) |
+| `telephony/test_flow.jac` | Offline tests of the whole call flow — no Twilio/network/key |
+| `telephony/test_voice.jac` | Offline tests of the ElevenLabs TTS path |
+
+Jac's *native* server layer (`walker:pub`) was deliberately **not** used for
+the webhook server: it always wraps responses in Jac's own JSON envelope and
+has no raw-XML response mode, which Twilio's TwiML contract requires (verified
+against the framework docs before choosing plain FastAPI-in-Jac instead).
 
 `render.yaml` and `.python-version` configure a persistent deploy of the
 webhook server on Render (see "Deploying" below) — a stable alternative to
@@ -100,9 +111,10 @@ Verify the install with the checks and offline tests — **these need no API key
 or network**:
 
 ```bash
-jac check main.jac                # type-check the whole project
-jac test agent.jac                # negotiation tests (MockLLM)
-python -m telephony.test_flow     # telephony flow tests (MockLLM)
+jac check main.jac                        # type-check the whole project
+jac test agent.jac                        # negotiation tests (MockLLM)
+jac test telephony/test_flow.jac          # telephony flow tests (MockLLM)
+jac test telephony/test_voice.jac         # ElevenLabs TTS tests (mocked)
 ```
 
 ## Running it
@@ -128,15 +140,15 @@ deploy (stable URL, no restart-and-repaste). Pick one:
 **a) Local + ngrok (quick iteration):**
 ```bash
 set -a; source .env; set +a
-uvicorn telephony.server:app --port 8080     # 1) webhook server
+uvicorn telephony.server:app --port 8080     # 1) webhook server (imports the .jac module directly)
 ngrok http 8080                              # 2) copy the https URL into PUBLIC_BASE_URL in .env
-python -m telephony.dial                     # 3) places the call
+jac run telephony/dial.jac                   # 3) places the call
 ```
 
 **b) Deployed on Render (stable URL — see "Deploying" below):**
 ```bash
 set -a; source .env; set +a          # PUBLIC_BASE_URL = your Render URL (one-time)
-python -m telephony.dial
+jac run telephony/dial.jac
 ```
 
 Answer the phone, play the billing rep, and the agent negotiates live — walking
@@ -149,7 +161,7 @@ the graph one turn per exchange.
 ## Deploying (Render)
 
 Solves the "ngrok URL changes every time I restart it" problem: Render runs
-`telephony/server.py` as a persistent process with a stable `https://` URL, so
+`telephony/server.jac` as a persistent process with a stable `https://` URL, so
 `PUBLIC_BASE_URL` only needs to be set once, ever.
 
 1. Push this repo to GitHub (already done for `bfay1/jaul`).
@@ -164,7 +176,7 @@ Solves the "ngrok URL changes every time I restart it" problem: Render runs
    the server finds this itself via Render's auto-injected
    `RENDER_EXTERNAL_URL`, so **no `PUBLIC_BASE_URL` is needed on Render**.
 5. **One local step:** copy that URL into `PUBLIC_BASE_URL` in your *local*
-   `.env` — `telephony/dial.py` runs on your machine and needs to know where
+   `.env` — `telephony/dial.jac` runs on your machine and needs to know where
    to send the outbound call.
 
 ```bash
@@ -174,7 +186,7 @@ PUBLIC_BASE_URL=https://jaul-telephony.onrender.com
 
 ```bash
 set -a; source .env; set +a
-python -m telephony.dial
+jac run telephony/dial.jac
 ```
 
 **Free-tier note:** Render's free plan sleeps the service after ~15 min idle;
@@ -239,7 +251,7 @@ Twilio has no single "API key" for this. You need three things from the free
 - `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` — on the dashboard.
 - `TWILIO_FROM_NUMBER` — a Twilio phone number to call *from*.
 - `TWILIO_TO_NUMBER` — the number to call (your own phone for the demo).
-- `PUBLIC_BASE_URL` — the https URL where `telephony/server.py` is reachable
+- `PUBLIC_BASE_URL` — the https URL where `telephony/server.jac` is reachable
   (e.g. your ngrok URL).
 
 A **free trial account works for the demo.** It comes with credit and a number;
@@ -273,6 +285,15 @@ needed.
   advances the graph exactly one hop per webhook, so the same OSP engine drives
   both the blocking mock demo and a live, webhook-paced phone call — dynamic
   node creation included; no telephony code needed to change for it.
+- **The telephony layer is Jac too, not a Python shim around it** — the FastAPI
+  webhook server, the ElevenLabs TTS call, the Twilio dialer, and the session
+  bridge (`NegotiationSession`) are all `.jac`. `spawn`/`root`/`++>` work as
+  native operators inside a plain `obj` method, so there's no
+  `jaclang.lib`-bridge boundary between the phone transport and the graph
+  anymore — one compiler, one language, start to finish. The only `.py` file
+  left in the project is `telephony/__init__.py`, which is empty of logic and
+  stays `.py` purely because Python's package system requires that exact
+  filename.
 
 ## Build status
 

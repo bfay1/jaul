@@ -1,4 +1,4 @@
-# Render Blueprint for the telephony webhook server (telephony/server.py).
+# Render Blueprint for the telephony webhook server (telephony/server.jac).
 # Deploy: push this repo to GitHub, then in Render -> New -> Blueprint, point
 # it at bfay1/jaul. Render reads this file and creates the service below.
 #
@@ -26,7 +26,7 @@ services:
       - key: TWILIO_TO_NUMBER
         sync: false
       # ElevenLabs TTS is optional: leave unset in the Render dashboard to fall
-      # back to Twilio's built-in Polly voice for every turn (see voice.py).
+      # back to Twilio's built-in Polly voice for every turn (see voice.jac).
       - key: ELEVENLABS_API_KEY
         sync: false
       - key: ELEVENLABS_VOICE_ID
@@ -34,4 +34,4 @@ services:
       - key: ELEVENLABS_MODEL_ID
         sync: false
       # PUBLIC_BASE_URL is intentionally NOT set here: the server falls back to
-      # Render's own RENDER_EXTERNAL_URL automatically (see telephony/server.py).
+      # Render's own RENDER_EXTERNAL_URL automatically (see telephony/server.jac).
