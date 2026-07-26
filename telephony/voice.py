@@ -29,17 +29,19 @@ _DEFAULT_MODEL_ID = "eleven_flash_v2_5"
 # the Polly <Say> voice for that turn instead of running out the clock.
 _TIMEOUT_SECONDS = 4
 
-# `<Play>` fetches a self-contained audio FILE and needs to detect its own
-# format - it is NOT the same mechanism as Twilio Media Streams (a WebSocket
-# that negotiates raw ulaw_8000 frames once, with no per-chunk headers). An
-# earlier version of this code requested ulaw_8000 for use with <Play>, which
-# is headerless raw PCM with no container - exactly the wrong shape for a
-# fetched file, and the likely cause of choppy/garbled playback. wav_8000 is a
-# proper RIFF/WAVE container (a real, self-describing file) already at
-# Twilio's native 8kHz sample rate, so <Play> parses it correctly with
-# minimal transcoding.
-_OUTPUT_FORMAT = "wav_8000"
-_CONTENT_TYPE = "audio/wav"
+# Two telephony-optimized formats were tried here and both proved wrong:
+# - ulaw_8000: headerless raw PCM, the wrong shape for <Play> (a file fetch);
+#   that format is meant for Twilio Media Streams (a WebSocket), not <Play>.
+# - wav_8000: fetching a live clip and inspecting it with Python's `wave`
+#   module showed ~40-46 SECONDS of audio for a single short sentence, at
+#   every clip checked - a real defect in that specific format combination,
+#   not just lower quality.
+# mp3_44100_128 is ElevenLabs' own plain default and the format essentially
+# every "ElevenLabs + Twilio <Play>" integration guide actually uses - Twilio
+# transcodes it down to telephony quality itself, which is mature and
+# well-tested, unlike our two attempts at doing that step ourselves.
+_OUTPUT_FORMAT = "mp3_44100_128"
+_CONTENT_TYPE = "audio/mpeg"
 
 # clip_id -> (audio_bytes, content_type). In-memory only: fine for a
 # single-process demo server (same assumption server.py's `_sessions` dict
