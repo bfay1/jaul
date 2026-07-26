@@ -88,6 +88,23 @@ def test_transport_escapes_xml():
     assert "<hi>" not in body  # the literal line must not leak raw angle brackets
 
 
+def test_transport_plays_audio_url_when_given():
+    t = TurnBasedTransport()
+    _, body = t.render(
+        "Hello there.", "in_progress", "https://x.test/twiml/turn",
+        audio_url="https://x.test/audio/abc123",
+    )
+    assert "<Play>https://x.test/audio/abc123</Play>" in body
+    assert "<Say" not in body
+
+
+def test_transport_says_when_no_audio_url():
+    t = TurnBasedTransport()
+    _, body = t.render("Hello there.", "in_progress", "https://x.test/twiml/turn")
+    assert "<Say" in body
+    assert "<Play>" not in body
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

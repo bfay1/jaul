@@ -12,8 +12,19 @@ from xml.sax.saxutils import escape
 
 class Transport(ABC):
     @abstractmethod
-    def render(self, agent_line: str, status: str, turn_action_url: str) -> tuple[str, str]:
-        """Return (content_type, body) to send back for this turn."""
+    def render(
+        self,
+        agent_line: str,
+        status: str,
+        turn_action_url: str,
+        audio_url: str | None = None,
+    ) -> tuple[str, str]:
+        """Return (content_type, body) to send back for this turn.
+
+        `audio_url`, if given, is pre-synthesized audio (e.g. ElevenLabs) that
+        should be played instead of speaking `agent_line` via the built-in
+        voice. Optional and defaulted so existing callers are unaffected.
+        """
         ...
 
 
@@ -37,8 +48,17 @@ class TurnBasedTransport(Transport):
         self.speech_timeout = speech_timeout
         self.language = language
 
-    def render(self, agent_line: str, status: str, turn_action_url: str) -> tuple[str, str]:
-        say = f'<Say voice="{escape(self.voice, {chr(34): "&quot;"})}">{escape(agent_line)}</Say>'
+    def render(
+        self,
+        agent_line: str,
+        status: str,
+        turn_action_url: str,
+        audio_url: str | None = None,
+    ) -> tuple[str, str]:
+        if audio_url is not None:
+            voice_element = f"<Play>{escape(audio_url)}</Play>"
+        else:
+            voice_element = f'<Say voice="{escape(self.voice, {chr(34): "&quot;"})}">{escape(agent_line)}</Say>'
         url = escape(turn_action_url, {chr(34): "&quot;"})
         if status == "in_progress":
             body = (
@@ -46,7 +66,7 @@ class TurnBasedTransport(Transport):
                 "<Response>"
                 f'<Gather input="speech" action="{url}" method="POST" '
                 f'speechTimeout="{self.speech_timeout}" language="{self.language}">'
-                f"{say}"
+                f"{voice_element}"
                 "</Gather>"
                 # Rep said nothing within the gather: bounce back to reprompt.
                 f'<Redirect method="POST">{url}</Redirect>'
@@ -55,7 +75,7 @@ class TurnBasedTransport(Transport):
         else:
             body = (
                 '<?xml version="1.0" encoding="UTF-8"?>'
-                f"<Response>{say}<Hangup/></Response>"
+                f"<Response>{voice_element}<Hangup/></Response>"
             )
         return "application/xml", body
 
@@ -79,7 +99,13 @@ class StreamingTransport(Transport):
     exact seam to fill when time permits.
     """
 
-    def render(self, agent_line: str, status: str, turn_action_url: str) -> tuple[str, str]:
+    def render(
+        self,
+        agent_line: str,
+        status: str,
+        turn_action_url: str,
+        audio_url: str | None = None,
+    ) -> tuple[str, str]:
         raise NotImplementedError(
             "StreamingTransport is the documented Media Streams seam (option 2); "
             "the working demo uses TurnBasedTransport."

@@ -15,6 +15,7 @@ from fastapi import FastAPI, Request, Response
 
 from telephony.core import NegotiationSession
 from telephony.transport import TurnBasedTransport
+from telephony import voice
 
 app = FastAPI(title="jaul telephony")
 
@@ -29,6 +30,20 @@ def _turn_url(request: Request) -> str:
     return f"{base.rstrip('/')}/twiml/turn"
 
 
+def _audio_url(request: Request, clip_id: str) -> str:
+    base = os.environ.get("PUBLIC_BASE_URL", str(request.base_url).rstrip("/"))
+    return f"{base.rstrip('/')}/audio/{clip_id}"
+
+
+def _render(request: Request, line: str, status: str) -> tuple[str, str]:
+    # ElevenLabs is strictly opt-in: synthesize() returns None (no exception,
+    # no stall) if it's unconfigured or the call fails/times out, in which
+    # case render() falls back to the built-in Polly voice for this turn.
+    clip_id = voice.synthesize(line)
+    audio_url = _audio_url(request, clip_id) if clip_id else None
+    return _transport.render(line, status, _turn_url(request), audio_url=audio_url)
+
+
 @app.post("/twiml/start")
 async def twiml_start(request: Request) -> Response:
     form = await request.form()
@@ -36,7 +51,7 @@ async def twiml_start(request: Request) -> Response:
     session = NegotiationSession()
     _sessions[call_sid] = session
     line, status = session.start()
-    ctype, body = _transport.render(line, status, _turn_url(request))
+    ctype, body = _render(request, line, status)
     return Response(content=body, media_type=ctype)
 
 
@@ -58,10 +73,20 @@ async def twiml_turn(request: Request) -> Response:
     else:
         line, status = session.advance(speech)
 
-    ctype, body = _transport.render(line, status, _turn_url(request))
+    ctype, body = _render(request, line, status)
     if status != "in_progress":
         _sessions.pop(call_sid, None)
     return Response(content=body, media_type=ctype)
+
+
+@app.get("/audio/{clip_id}")
+def get_audio(clip_id: str) -> Response:
+    """Serves ElevenLabs-synthesized audio back to Twilio's <Play> fetch."""
+    clip = voice.get_clip(clip_id)
+    if clip is None:
+        return Response(status_code=404)
+    audio_bytes, content_type = clip
+    return Response(content=audio_bytes, media_type=content_type)
 
 
 @app.get("/health")
