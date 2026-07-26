@@ -25,5 +25,13 @@ services:
         sync: false
       - key: TWILIO_TO_NUMBER
         sync: false
+      # ElevenLabs TTS is optional: leave unset in the Render dashboard to fall
+      # back to Twilio's built-in Polly voice for every turn (see voice.py).
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        sync: false
+      - key: ELEVENLABS_MODEL_ID
+        sync: false
       # PUBLIC_BASE_URL is intentionally NOT set here: the server falls back to
       # Render's own RENDER_EXTERNAL_URL automatically (see telephony/server.py).

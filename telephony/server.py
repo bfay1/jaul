@@ -35,7 +35,7 @@ _sessions: dict[str, NegotiationSession] = {}
 _transport = TurnBasedTransport()
 
 
-def _turn_url(request: Request) -> str:
+def _public_base_url(request: Request) -> str:
     # Explicit PUBLIC_BASE_URL wins (e.g. local ngrok); otherwise Render already
     # tells us our own public URL; otherwise fall back to what the request saw.
     base = (
@@ -43,12 +43,15 @@ def _turn_url(request: Request) -> str:
         or os.environ.get("RENDER_EXTERNAL_URL")
         or str(request.base_url).rstrip("/")
     )
-    return f"{base.rstrip('/')}/twiml/turn"
+    return base.rstrip("/")
+
+
+def _turn_url(request: Request) -> str:
+    return f"{_public_base_url(request)}/twiml/turn"
 
 
 def _audio_url(request: Request, clip_id: str) -> str:
-    base = os.environ.get("PUBLIC_BASE_URL", str(request.base_url).rstrip("/"))
-    return f"{base.rstrip('/')}/audio/{clip_id}"
+    return f"{_public_base_url(request)}/audio/{clip_id}"
 
 
 def _render(request: Request, line: str, status: str) -> tuple[str, str]:
