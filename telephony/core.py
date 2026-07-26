@@ -34,7 +34,7 @@ class NegotiationSession:
     """One live call. Not thread-safe; one session per CallSid."""
 
     def __init__(self, patient=None) -> None:
-        self._node = _graph.build_call_graph()   # this call's fresh opening node
+        self._node = _graph.start_call()   # this call's fresh opening node
         # An _agent.PatientCase (e.g. via load_case), or None to let the walker
         # fall back to its demo_case() default.
         self._patient = patient

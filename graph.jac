@@ -1,14 +1,17 @@
-"""The negotiation tactic graph: nodes, typed edges, and how to build one.
+"""The negotiation tactic graph: nodes, typed edges, and how a call starts.
 
-This module owns the *shape* of a negotiation - the tactics and the
-transitions between them - with no LLM or walker logic. The walker that
-traverses it lives in `agent.jac`.
+This module owns the *shape* of a negotiation - the tactic node types and the
+edge types that can connect them - with no LLM or walker logic. The graph is
+NOT pre-wired: only the opening node exists when a call starts. The walker in
+`agent.jac` creates each subsequent node and edge live, per turn, as it
+decides what to do next - the graph is a trace of the call, not a map drawn in
+advance of it.
 """
 
 # --- Graph shape -----------------------------------------------------------
 # Every negotiation tactic is a typed node. All tactic nodes share the
-# `Tactic` base so the pre-wired transition edges below can be typed
-# `Tactic --> Tactic` instead of duplicated per concrete pair.
+# `Tactic` base so edges can be typed `Tactic --> Tactic` instead of
+# duplicated per concrete pair.
 
 node Tactic {
     has label: str;
@@ -16,11 +19,14 @@ node Tactic {
 
 node Opening(Tactic) {}
 
-node CounterOffer(Tactic) {
-    has offer_terms: str = "";
+# Every tactic after the opening is a TacticStep - created live by the walker
+# each turn, never pre-wired. `move` holds the chosen TacticMove's name (e.g.
+# "CITE_501R"); `label` (inherited from Tactic) is set to the same value, so
+# every existing `here.label` read (generate_line, printgraph, ...) keeps
+# working unchanged whether `here` is the Opening or a TacticStep.
+node TacticStep(Tactic) {
+    has move: str = "";
 }
-
-node Escalation(Tactic) {}
 
 node DealReached(Tactic) {
     has terms: str = "";
@@ -31,7 +37,9 @@ node DeadEnd(Tactic) {
 }
 
 # Edges are typed by what the rep just said - the transition *is* the
-# classification, not a branch in the walker's logic.
+# classification, not a branch in the walker's logic. Unchanged from before:
+# these were already RepIntent-shaped, they're just wired live now instead of
+# pre-wired in bulk.
 edge SoftNo: Tactic --> Tactic {}
 edge Stonewalling: Tactic --> Tactic {}
 edge NeedsEscalation: Tactic --> Tactic {}
@@ -39,44 +47,13 @@ edge Accepted: Tactic --> Tactic {}
 edge HardNo: Tactic --> Tactic {}
 
 
-"""Pre-wire every tactic transition a live call could take.
+"""Start a call: create just the opening node, attached to root.
 
-The walker does not know in advance which edge it will follow out of
-a node - that is decided live, per turn, by classifying the rep's
-response. This just lays down the possible transitions once.
+Nothing else is pre-wired - the walker in agent.jac builds every subsequent
+node and edge live, per turn, as the rep's responses come in.
 """
-def build_call_graph() -> Opening {
+def start_call() -> Opening {
     opening: Opening = Opening(label="opening");
-    counter: CounterOffer = CounterOffer(label="counter_offer");
-    escalation: Escalation = Escalation(label="escalation");
-    deal: DealReached = DealReached(label="deal_reached");
-    dead: DeadEnd = DeadEnd(label="dead_end");
-
     root ++> opening;
-
-    opening +>:SoftNo():+> counter;
-    opening +>:Stonewalling():+> escalation;
-    opening +>:NeedsEscalation():+> escalation;
-    opening +>:HardNo():+> dead;
-    opening +>:Accepted():+> deal;
-
-    # Every tactic node wires all five intents. A node missing one silently
-    # ends the call: the walker's `visit [...] else` fallback fires and the
-    # negotiation reports dead_end even though the rep never refused.
-    counter +>:Accepted():+> deal;
-    counter +>:SoftNo():+> escalation;
-    counter +>:Stonewalling():+> escalation;
-    counter +>:NeedsEscalation():+> escalation;
-    counter +>:HardNo():+> dead;
-
-    # Escalation self-loops on everything short of a decision: the supervisor
-    # deflecting, holding firm, or handing off again all mean "keep pressing".
-    # Only Accepted/HardNo leave the node; max_turns bounds the loop.
-    escalation +>:Accepted():+> deal;
-    escalation +>:SoftNo():+> escalation;
-    escalation +>:Stonewalling():+> escalation;
-    escalation +>:NeedsEscalation():+> escalation;
-    escalation +>:HardNo():+> dead;
-
     return opening;
 }

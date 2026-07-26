@@ -5,7 +5,7 @@ and runs one call. This file stays thin on purpose - the graph shape lives in
 graph.jac, the LLM logic and walker in agent.jac.
 """
 
-import from graph { build_call_graph }
+import from graph { start_call }
 import from agent { NegotiationAgent, PatientCase }
 import from casefile { case_from_argv }
 
@@ -17,11 +17,11 @@ with entry:__main__ {
     # the walker expects.
     patient = case_from_argv() as PatientCase;
 
-    # root ++> opening happens inside build_call_graph, giving graph-native
+    # root ++> opening happens inside start_call, giving graph-native
     # persistence of every call's tactic graph and outcome across runs.
     # We still spawn directly on THIS call's opening node so the walker
     # only ever traverses the fresh subgraph, not prior calls' nodes.
-    opening = build_call_graph();
+    opening = start_call();
 
     result = opening spawn NegotiationAgent(patient=patient);
 

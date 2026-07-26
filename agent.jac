@@ -1,16 +1,19 @@
 """The negotiation engine: LLM-backed intelligence + the traversing walker.
 
 This module owns the *behavior* - how the agent decides what to say, how it
-reads the rep's reply, and how the walker moves across the tactic graph
-defined in `graph.jac`. The MockLLM tests live here too, because they swap
-this module's `glob llm` and exercise the same functions.
+reads the rep's reply, how it picks its next tactic, and how the walker
+builds and moves across the tactic graph defined in `graph.jac`. The graph is
+NOT pre-wired: each walker creates the next node and edge live, per turn, as
+it decides what to do - the traversal and the graph's shape are the same
+live decision. The MockLLM tests live here too, because they swap this
+module's `glob llm` and exercise the same functions.
 """
 
 import from byllm.lib { Model, MockLLM }
 import from graph {
-    Tactic, Opening, CounterOffer, Escalation, DealReached, DeadEnd,
+    Tactic, Opening, TacticStep, DealReached, DeadEnd,
     SoftNo, Stonewalling, NeedsEscalation, Accepted, HardNo,
-    build_call_graph
+    start_call
 }
 
 # --- Model config ------------------------------------------------------------
@@ -35,10 +38,23 @@ glob llm: Model | MockLLM = Model(model_name="claude-sonnet-4-6");
 obj PatientCase {
     has name: str = "the patient";
     has notes: str = "";
+
+    # A METHOD, not a free function taking PatientCase as a parameter. This
+    # matters: byllm 0.6.19's compile-time param extraction silently drops an
+    # obj-typed parameter from its internal params list while the runtime args
+    # dict still has it, crashing every call with an IndexError deep in
+    # byllm's prompt builder. Method-level `by llm()` sidesteps this entirely
+    # and is byllm's own documented idiom - the object's `has` fields (name,
+    # notes) are automatically included as context, no explicit passing
+    # needed. Verified working via a minimal repro before adopting this.
+    def generate_line(tactic_label: str, transcript: list[str]) -> str by llm();
 }
 sem PatientCase = "The case file for the patient the agent is advocating for.";
 sem PatientCase.name = "A short name/label for the patient, for display.";
 sem PatientCase.notes = "The full case file (markdown): the patient's financial situation, insurance, bill, hardship, and goals. Ground every ask in these specifics.";
+sem PatientCase.generate_line = "You are a calm, persistent patient advocate on a phone call with a hospital billing department, calling on behalf of the patient described by your name and notes. Introduce yourself only as calling on behalf of that patient by name (e.g. \"I'm calling on behalf of Jordan Rivera\") - you have no name of your own, so NEVER invent, state, or use a placeholder name (such as 'Agent Name' or similar) for yourself. Ground every ask in the case's specifics - income relative to the federal poverty level, the bill amount, insurance status, nonprofit 501(r) obligations, and hardship - to argue for income-based discounts, charity care, and interest-free payment plans they may qualify for, without being pushy. Given the current tactic phase and the transcript so far, draft the agent's single next spoken line - polite, concise, specific to this patient, and fitting the phase.";
+sem PatientCase.generate_line.tactic_label = "The current negotiation phase: 'opening' (first ask about assistance programs), or the name of the tactic move just chosen - 'ASK_ASSISTANCE' (reiterating the ask), 'OFFER_INCOME_DISCOUNT' (proposing an income-based discount), 'REQUEST_CHARITY_CARE' (asking about charity care eligibility), 'PROPOSE_PAYMENT_PLAN' (proposing an interest-free payment plan), 'CITE_501R' (invoking the hospital's IRS 501(r) financial assistance policy obligations), or 'ESCALATE' (asking to speak with a supervisor).";
+sem PatientCase.generate_line.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines.";
 
 """A built-in default case - used for tests and as the walkers' default when no
 case file is supplied. Mirrors cases/jordan-rivera.md in brief."""
@@ -51,10 +67,10 @@ def demo_case() -> PatientCase {
 
 
 # --- LLM-backed intelligence -------------------------------------------------
-# Classification, dialogue generation, and the mock vendor-rep are each
-# powered by `by llm()`. `sem` strings (not docstrings) tell the LLM what
-# each piece means - docstrings inside a `by llm()` body are a parse error
-# anyway, since `by llm()` replaces the body entirely.
+# Classification, tactic choice, dialogue generation, and the mock vendor-rep
+# are each powered by `by llm()`. `sem` strings (not docstrings) tell the LLM
+# what each piece means - docstrings inside a `by llm()` body are a parse
+# error anyway, since `by llm()` replaces the body entirely.
 
 enum RepIntent {
     SOFT_NO,
@@ -69,19 +85,76 @@ sem RepIntent.NEEDS_ESCALATION = "The rep says they personally can't approve thi
 sem RepIntent.ACCEPTED = "The rep agrees to and confirms a concrete financial-assistance arrangement (discount, charity care, or payment plan).";
 sem RepIntent.HARD_NO = "The rep firmly and finally states no assistance programs exist or will be offered.";
 
+# The tactic the agent chooses to try next. RepIntent remains the SOLE
+# authority on whether the call is over (ACCEPTED/HARD_NO short-circuit to
+# DealReached/DeadEnd without ever calling choose_next_tactic) - there is no
+# ACCEPT_DEAL/WALK_AWAY move here, deliberately, so there is never a case
+# where the classifier and the tactic-chooser could disagree about whether
+# the negotiation has ended.
+enum TacticMove {
+    ASK_ASSISTANCE,
+    OFFER_INCOME_DISCOUNT,
+    REQUEST_CHARITY_CARE,
+    PROPOSE_PAYMENT_PLAN,
+    CITE_501R,
+    ESCALATE
+}
+sem TacticMove.ASK_ASSISTANCE = "Reiterate or clarify the ask about income-based financial assistance programs.";
+sem TacticMove.OFFER_INCOME_DISCOUNT = "Propose a specific income-based discount on the bill.";
+sem TacticMove.REQUEST_CHARITY_CARE = "Ask whether the patient qualifies for charity care - free or deeply discounted care.";
+sem TacticMove.PROPOSE_PAYMENT_PLAN = "Propose an interest-free payment plan for the remaining balance.";
+sem TacticMove.CITE_501R = "Invoke the hospital's IRS 501(r) financial assistance policy obligations, if it is a nonprofit hospital.";
+sem TacticMove.ESCALATE = "Ask to speak with a supervisor or specialist who can approve more than the current rep can.";
+
 def classify_response(response: str) -> RepIntent by llm();
 sem classify_response = "Classify a hospital billing rep's most recent spoken line, during a patient's call negotiating financial assistance, into the intent that best matches what the rep just said.";
 sem classify_response.response = "The rep's most recent spoken line in the call.";
 
-def generate_line(patient_case: PatientCase, tactic_label: str, transcript: list[str]) -> str by llm();
-sem generate_line = "You are a calm, persistent patient advocate on a phone call with a hospital billing department, calling on behalf of the patient described in the case file. Introduce yourself only as calling on behalf of that patient by name (e.g. \"I'm calling on behalf of Jordan Rivera\") - you have no name of your own, so NEVER invent, state, or use a placeholder name (such as 'Agent Name' or similar) for yourself. Ground every ask in the case's specifics - income relative to the federal poverty level, the bill amount, insurance status, nonprofit 501(r) obligations, and hardship - to argue for income-based discounts, charity care, and interest-free payment plans they may qualify for, without being pushy. Given the case file, the current tactic phase, and the transcript so far, draft the agent's single next spoken line - polite, concise, specific to this patient, and fitting the phase.";
-sem generate_line.patient_case = "The patient's case file - the facts to argue from.";
-sem generate_line.tactic_label = "The current negotiation phase: 'opening' (first ask about assistance programs), 'counter_offer' (proposing a specific discount or payment plan), or 'escalation' (asking for a supervisor).";
-sem generate_line.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines.";
+def choose_next_tactic(transcript: list[str], last_intent: RepIntent) -> TacticMove by llm();
+sem choose_next_tactic = "Decide the patient advocate's next negotiation tactic during a call with a hospital billing department, given how the rep just responded and the transcript so far. Pick the single move most likely to advance toward a concrete financial-assistance arrangement, without repeating a tactic that visibly isn't working.";
+sem choose_next_tactic.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines.";
+sem choose_next_tactic.last_intent = "How the rep's most recent reply was just classified - what prompted this decision.";
 
 def rep_reply(transcript: list[str]) -> str by llm();
 sem rep_reply = "You are playing a realistic, moderately resistant hospital billing department representative on a phone call. Respond naturally and briefly to the agent's most recent line, staying consistent with everything said earlier in the call. Be a believable mix of vague deflection, protectiveness about what you're allowed to approve, occasional willingness to loop in a supervisor, and only rarely an immediate yes.";
 sem rep_reply.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines. Reply as the REP's next line only.";
+
+
+# --- Graph-building helpers --------------------------------------------------
+# Shared by both walkers below. Live here (not graph.jac) because they need
+# RepIntent/TacticMove at runtime, and graph.jac stays LLM/decision-free.
+
+"""Create the next TacticStep for a continuing intent (SOFT_NO/STONEWALLING/
+NEEDS_ESCALATION), connect it from `current` via the matching typed edge, and
+return it. Edge-type creation is compile-time-literal (`+>:E():+>`), hence the
+ladder rather than a single parameterized call - confirmed via a scratch check
+before writing this."""
+def advance_tactic(current: Tactic, intent: RepIntent, move: TacticMove) -> TacticStep {
+    move_name: str = move.name;
+    new_step: TacticStep = TacticStep(label=move_name, move=move_name);
+    if intent == RepIntent.SOFT_NO {
+        current +>:SoftNo():+> new_step;
+    } elif intent == RepIntent.STONEWALLING {
+        current +>:Stonewalling():+> new_step;
+    } else {
+        current +>:NeedsEscalation():+> new_step;
+    }
+    return new_step;
+}
+
+"""Create the terminal node for ACCEPTED/HARD_NO, connect it from `current`,
+and return it. The only place a call can end - RepIntent is the sole
+authority on this, never TacticMove."""
+def reach_terminal(current: Tactic, intent: RepIntent) -> Tactic {
+    if intent == RepIntent.ACCEPTED {
+        deal: DealReached = DealReached(label="deal_reached");
+        current +>:Accepted():+> deal;
+        return deal;
+    }
+    dead: DeadEnd = DeadEnd(label="dead_end");
+    current +>:HardNo():+> dead;
+    return dead;
+}
 
 
 # --- The walker: the negotiation engine -------------------------------------
@@ -93,14 +166,14 @@ walker NegotiationAgent {
     has max_turns: int = 6;
     has patient: PatientCase = demo_case();
 
-    can negotiate with Opening | CounterOffer | Escalation entry {
+    can negotiate with Opening | TacticStep entry {
         self.turns += 1;
         if self.turns > self.max_turns {
             self.outcome = "dead_end";
             disengage;
         }
 
-        line = generate_line(self.patient, here.label, self.transcript);
+        line = self.patient.generate_line(here.label, self.transcript);
         self.transcript.append("AGENT: " + line);
 
         response = rep_reply(self.transcript);
@@ -108,31 +181,13 @@ walker NegotiationAgent {
 
         intent = classify_response(response);
 
-        if intent == RepIntent.SOFT_NO {
-            visit [here ->:SoftNo:->] else {
-                self.outcome = "dead_end";
-                disengage;
-            }
-        } elif intent == RepIntent.STONEWALLING {
-            visit [here ->:Stonewalling:->] else {
-                self.outcome = "dead_end";
-                disengage;
-            }
-        } elif intent == RepIntent.NEEDS_ESCALATION {
-            visit [here ->:NeedsEscalation:->] else {
-                self.outcome = "dead_end";
-                disengage;
-            }
-        } elif intent == RepIntent.ACCEPTED {
-            visit [here ->:Accepted:->] else {
-                self.outcome = "dead_end";
-                disengage;
-            }
+        if intent == RepIntent.ACCEPTED or intent == RepIntent.HARD_NO {
+            terminal_node = reach_terminal(here, intent);
+            visit [terminal_node];
         } else {
-            visit [here ->:HardNo:->] else {
-                self.outcome = "dead_end";
-                disengage;
-            }
+            move = choose_next_tactic(self.transcript, intent);
+            new_step = advance_tactic(here, intent, move);
+            visit [new_step];
         }
     }
 
@@ -158,6 +213,13 @@ walker NegotiationAgent {
 # (telephony/) spawns a fresh one each webhook, on the node the last turn ended
 # on, passing in what the rep just said. The traversal logic is identical; only
 # who supplies the rep's line differs (a real human, not `rep_reply`).
+#
+# Dynamic node creation doesn't threaten the one-hop-per-spawn contract:
+# on the "have a reply" branch below, the ability constructs the target node
+# THIS INSTANT and `visit`s it - the same spawn immediately re-enters that
+# fresh node's "just arrived" branch (rep_utterance is now ""), sets
+# end_node, and disengages. Identical shape to traversing a pre-wired edge;
+# telephony/core.py needs no changes for this.
 
 walker NegotiationTurn {
     has rep_utterance: str = "";           # empty on the opening turn
@@ -167,34 +229,32 @@ walker NegotiationTurn {
     has end_node: Tactic | None = None;    # OUT: node to resume from next turn
     has patient: PatientCase = demo_case();
 
-    can step with Opening | CounterOffer | Escalation entry {
+    can step with Opening | TacticStep entry {
         # No rep utterance yet => we just arrived at this tactic (either the
         # call's opening, or a hop taken this same spawn). Speak its line and
         # stop, leaving `end_node` here for the next webhook to resume from.
         if self.rep_utterance == "" {
-            self.agent_line = generate_line(self.patient, here.label, self.transcript);
+            self.agent_line = self.patient.generate_line(here.label, self.transcript);
             self.transcript.append("AGENT: " + self.agent_line);
             self.end_node = here;
             disengage;
         }
 
         # We have the rep's reply to the line we spoke last turn: classify it,
-        # then traverse exactly one typed edge. Clearing rep_utterance means the
-        # node we land on takes the branch above and generates the next line.
+        # then build and traverse exactly one typed edge to a fresh node.
+        # Clearing rep_utterance means the node we land on takes the branch
+        # above and generates the next line.
         self.transcript.append("REP: " + self.rep_utterance);
         intent = classify_response(self.rep_utterance);
         self.rep_utterance = "";
 
-        if intent == RepIntent.SOFT_NO {
-            visit [here ->:SoftNo:->] else { self.dead_end(here); }
-        } elif intent == RepIntent.STONEWALLING {
-            visit [here ->:Stonewalling:->] else { self.dead_end(here); }
-        } elif intent == RepIntent.NEEDS_ESCALATION {
-            visit [here ->:NeedsEscalation:->] else { self.dead_end(here); }
-        } elif intent == RepIntent.ACCEPTED {
-            visit [here ->:Accepted:->] else { self.dead_end(here); }
+        if intent == RepIntent.ACCEPTED or intent == RepIntent.HARD_NO {
+            terminal_node = reach_terminal(here, intent);
+            visit [terminal_node];
         } else {
-            visit [here ->:HardNo:->] else { self.dead_end(here); }
+            move = choose_next_tactic(self.transcript, intent);
+            new_step = advance_tactic(here, intent, move);
+            visit [new_step];
         }
     }
 
@@ -213,37 +273,10 @@ walker NegotiationTurn {
         self.end_node = here;
         disengage;
     }
-
-    def dead_end(stuck: Tactic) {
-        # No typed edge out for this classification: end the call gracefully
-        # rather than crash. Stays on the current node.
-        self.status = "dead_end";
-        self.agent_line = "I understand - thank you for taking the time to look into it for me.";
-        self.transcript.append("AGENT: " + self.agent_line);
-        self.end_node = stuck;
-        disengage;
-    }
 }
 
 
 # --- Tests (MockLLM - no API key or network needed) --------------------------
-
-test "every tactic node wires all five rep intents" {
-    # A tactic missing an edge does not error - the walker's `visit ... else`
-    # fallback quietly reports dead_end, so the call just stops. This guard
-    # makes that failure loud instead of invisible.
-    opening = build_call_graph();
-    counter = [opening ->:SoftNo:->][0];
-    escalation = [opening ->:NeedsEscalation:->][0];
-
-    for tactic in [opening, counter, escalation] {
-        assert len([tactic ->:SoftNo:->]) > 0;
-        assert len([tactic ->:Stonewalling:->]) > 0;
-        assert len([tactic ->:NeedsEscalation:->]) > 0;
-        assert len([tactic ->:Accepted:->]) > 0;
-        assert len([tactic ->:HardNo:->]) > 0;
-    }
-}
 
 test "rep agrees immediately and the call reaches a deal" {
     global llm;
@@ -253,7 +286,7 @@ test "rep agrees immediately and the call reaches a deal" {
         RepIntent.ACCEPTED
     ]});
 
-    opening = build_call_graph();
+    opening = start_call();
     result = opening spawn NegotiationAgent();
 
     assert result.outcome == "deal_reached";
@@ -269,7 +302,7 @@ test "a firm hard no from the rep leads to a dead end" {
         RepIntent.HARD_NO
     ]});
 
-    opening = build_call_graph();
+    opening = start_call();
     result = opening spawn NegotiationAgent();
 
     assert result.outcome == "dead_end";
@@ -282,12 +315,13 @@ test "escalation followed by acceptance still reaches a deal" {
         "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
         "I can't approve that myself, you'd need to talk to my supervisor.",
         RepIntent.NEEDS_ESCALATION,
+        TacticMove.ESCALATE,
         "Let me see what my supervisor can authorize for a hardship adjustment.",
         "Okay, my supervisor approved an interest-free payment plan for you.",
         RepIntent.ACCEPTED
     ]});
 
-    opening = build_call_graph();
+    opening = start_call();
     result = opening spawn NegotiationAgent();
 
     assert result.outcome == "deal_reached";

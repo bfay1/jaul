@@ -27,6 +27,7 @@ def test_deal_via_escalation():
         outputs=[
             "Hi, are there any financial assistance programs I might qualify for?",
             agent.RepIntent.NEEDS_ESCALATION,
+            agent.TacticMove.ESCALATE,
             "Could I speak with a supervisor about a hardship adjustment?",
             agent.RepIntent.ACCEPTED,
         ],
@@ -40,17 +41,17 @@ def test_deal_via_escalation():
 
 
 def test_repeated_soft_no_climbs_to_escalation():
-    # A deflecting rep must not end the call. Opening -SoftNo-> CounterOffer
-    # -SoftNo-> Escalation: the agent climbs the tactic ladder instead of
-    # hanging up. CounterOffer used to have no SoftNo edge, so this exact
-    # exchange -- the single most likely one on a real call -- dead-ended after
-    # two turns via the walker's graceful-exit fallback.
+    # A deflecting rep must not end the call. The agent keeps building new
+    # tactic steps and climbing rather than hanging up - dynamic graph
+    # construction means there's no pre-wired edge to be missing anymore.
     session = _run(
         outputs=[
             "Hi, are there any financial assistance programs I might qualify for?",
-            agent.RepIntent.SOFT_NO,       # opening -> CounterOffer
+            agent.RepIntent.SOFT_NO,
+            agent.TacticMove.OFFER_INCOME_DISCOUNT,
             "Could we set up an interest-free payment plan instead?",
-            agent.RepIntent.SOFT_NO,       # CounterOffer -> Escalation
+            agent.RepIntent.SOFT_NO,
+            agent.TacticMove.ESCALATE,
             "Could I speak with a supervisor about a hardship adjustment?",
         ],
         rep_lines=["Maybe, I'm not sure.", "Hmm, I really can't say."],
