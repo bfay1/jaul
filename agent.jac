@@ -57,7 +57,7 @@ sem RepIntent.SOFT_NO = "The rep gave a vague, noncommittal, or deflecting reply
 sem RepIntent.STONEWALLING = "The rep won't offer anything more at their level and is not budging, but hasn't issued a firm final no.";
 sem RepIntent.NEEDS_ESCALATION = "The rep says they personally can't approve this and a supervisor or specialist must get involved.";
 sem RepIntent.ACCEPTED = "The rep agrees to and confirms a concrete financial-assistance arrangement (discount, charity care, or payment plan).";
-sem RepIntent.HARD_NO = "The rep firmly and finally states no assistance programs exist or will be offered.";
+sem RepIntent.HARD_NO = "The rep issues a firm, final, authoritative refusal - the matter is closed and there is nothing further to pursue. This is rare. A rep who merely says they are unaware of a program, who denies it without the authority to decide, who suggests calling another department, or who says no to one specific request while the conversation continues, is NOT a hard no - that is SOFT_NO or STONEWALLING.";
 
 # Maps each intent to the typed edge it takes. Edge-type filters accept a
 # runtime variable, so this table replaces five near-identical if/elif arms in
