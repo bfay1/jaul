@@ -24,13 +24,10 @@ from jaclang.lib import spawn
 MAX_TURNS = 12
 
 
-def make_patient(**fields):
-    """Build a PatientProfile for a session (e.g. from an intake form).
-
-    Fields: name, hospital_name, bill_amount, annual_income, household_size,
-    has_insurance, is_nonprofit_hospital, hardship_notes. See agent.jac.
-    """
-    return _agent.PatientProfile(**fields)
+def load_case(path: str):
+    """Load a markdown case file into a PatientCase (see casefile.load_case)."""
+    from casefile import load_case as _load_case
+    return _load_case(path)
 
 
 class NegotiationSession:
@@ -38,8 +35,8 @@ class NegotiationSession:
 
     def __init__(self, patient=None) -> None:
         self._node = _graph.build_call_graph()   # this call's fresh opening node
-        # An _agent.PatientProfile (e.g. via make_patient), or None to let the
-        # walker fall back to its demo_patient() default.
+        # An _agent.PatientCase (e.g. via load_case), or None to let the walker
+        # fall back to its demo_case() default.
         self._patient = patient
         self.transcript: list[str] = []
         self.status: str = "in_progress"

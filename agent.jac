@@ -26,44 +26,26 @@ glob llm: Model | MockLLM = Model(model_name="claude-sonnet-4-6");
 
 
 # --- Patient context --------------------------------------------------------
-# Real facts about the patient the agent advocates for. Threaded into line
-# generation so the agent argues with specifics (income vs. the federal poverty
-# level, the actual bill, nonprofit 501(r) obligations, hardship) instead of in
-# generic terms. Read-only during a call. An `obj` (not a node) because it's the
-# LLM boundary: `by llm()` takes objs, and the storage schema can evolve apart.
+# The patient's case file - a single markdown document (bill, income, insurance,
+# hardship, goals) that the agent argues from. `notes` holds the full markdown;
+# `name` is a short label pulled from its heading. An `obj` (not a node) because
+# it's the LLM boundary: `by llm()` takes objs, and storage can evolve apart.
+# The case file is loaded from disk by casefile.py (CLI `--case`) or telephony.
 
-obj PatientProfile {
-    has name: str;
-    has hospital_name: str;
-    has bill_amount: float;
-    has annual_income: int;
-    has household_size: int = 1;
-    has has_insurance: bool = False;
-    has is_nonprofit_hospital: bool = True;
-    has hardship_notes: str = "";
+obj PatientCase {
+    has name: str = "the patient";
+    has notes: str = "";
 }
-sem PatientProfile = "The patient the agent is calling on behalf of - factual context it may use to argue for assistance.";
-sem PatientProfile.name = "The patient's name.";
-sem PatientProfile.hospital_name = "The hospital or billing entity being called.";
-sem PatientProfile.bill_amount = "The outstanding bill, in US dollars.";
-sem PatientProfile.annual_income = "Approximate gross annual household income in US dollars - weigh against the federal poverty level for the household size to gauge charity-care eligibility.";
-sem PatientProfile.household_size = "Number of people in the household, including the patient.";
-sem PatientProfile.has_insurance = "Whether the patient has insurance. Uninsured patients often qualify for larger self-pay or charity discounts.";
-sem PatientProfile.is_nonprofit_hospital = "Whether the hospital is a nonprofit. Nonprofit hospitals are bound by IRS 501(r): they must keep a written financial assistance policy and cap charges for eligible patients.";
-sem PatientProfile.hardship_notes = "Free-form notes on the patient's financial hardship (job loss, medical condition, other debts) the agent can raise.";
+sem PatientCase = "The case file for the patient the agent is advocating for.";
+sem PatientCase.name = "A short name/label for the patient, for display.";
+sem PatientCase.notes = "The full case file (markdown): the patient's financial situation, insurance, bill, hardship, and goals. Ground every ask in these specifics.";
 
-"""A realistic example patient - used for demos and as the walkers' default
-when no specific profile is supplied."""
-def demo_patient() -> PatientProfile {
-    return PatientProfile(
+"""A built-in default case - used for tests and as the walkers' default when no
+case file is supplied. Mirrors cases/jordan-rivera.md in brief."""
+def demo_case() -> PatientCase {
+    return PatientCase(
         name="Jordan Rivera",
-        hospital_name="Bay Area General",
-        bill_amount=4200.0,
-        annual_income=31000,
-        household_size=3,
-        has_insurance=False,
-        is_nonprofit_hospital=True,
-        hardship_notes="Recently lost job; sole provider for two children."
+        notes="Single parent, household of 3, ~$31,000/yr income (~150% of the federal poverty level). Uninsured after a February layoff. $4,200 emergency-surgery bill at Bay Area General, a nonprofit hospital (IRS 501(r) applies). Behind on rent; seeking charity care, an income-based discount, or an interest-free payment plan."
     );
 }
 
@@ -91,9 +73,9 @@ def classify_response(response: str) -> RepIntent by llm();
 sem classify_response = "Classify a hospital billing rep's most recent spoken line, during a patient's call negotiating financial assistance, into the intent that best matches what the rep just said.";
 sem classify_response.response = "The rep's most recent spoken line in the call.";
 
-def generate_line(patient: PatientProfile, tactic_label: str, transcript: list[str]) -> str by llm();
-sem generate_line = "You are a calm, persistent patient advocate on a phone call with a hospital billing department, calling on behalf of the given patient. Use the patient's real circumstances - income relative to the federal poverty level, the bill amount, whether they're uninsured, nonprofit 501(r) obligations, and any hardship - to argue for income-based discounts, charity care, and interest-free payment plans they may qualify for, without being pushy. Given the patient, the current tactic phase, and the transcript so far, draft the agent's single next spoken line - polite, concise, specific to this patient, and fitting the phase.";
-sem generate_line.patient = "The patient the agent is advocating for - use these facts to make the ask concrete and credible.";
+def generate_line(patient_case: PatientCase, tactic_label: str, transcript: list[str]) -> str by llm();
+sem generate_line = "You are a calm, persistent patient advocate on a phone call with a hospital billing department, calling on behalf of the patient described in the case file. Ground every ask in the case's specifics - income relative to the federal poverty level, the bill amount, insurance status, nonprofit 501(r) obligations, and hardship - to argue for income-based discounts, charity care, and interest-free payment plans they may qualify for, without being pushy. Given the case file, the current tactic phase, and the transcript so far, draft the agent's single next spoken line - polite, concise, specific to this patient, and fitting the phase.";
+sem generate_line.patient_case = "The patient's case file - the facts to argue from.";
 sem generate_line.tactic_label = "The current negotiation phase: 'opening' (first ask about assistance programs), 'counter_offer' (proposing a specific discount or payment plan), or 'escalation' (asking for a supervisor).";
 sem generate_line.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines.";
 
@@ -109,7 +91,7 @@ walker NegotiationAgent {
     has outcome: str = "in_progress";
     has turns: int = 0;
     has max_turns: int = 6;
-    has patient: PatientProfile = demo_patient();
+    has patient: PatientCase = demo_case();
 
     can negotiate with Opening | CounterOffer | Escalation entry {
         self.turns += 1;
@@ -183,7 +165,7 @@ walker NegotiationTurn {
     has agent_line: str = "";              # OUT: what to speak this turn
     has status: str = "in_progress";       # OUT: in_progress | deal_reached | dead_end
     has end_node: Tactic | None = None;    # OUT: node to resume from next turn
-    has patient: PatientProfile = demo_patient();
+    has patient: PatientCase = demo_case();
 
     can step with Opening | CounterOffer | Escalation entry {
         # No rep utterance yet => we just arrived at this tactic (either the

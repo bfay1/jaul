@@ -47,6 +47,8 @@ DeadEnd
 | `graph.jac` | The tactic graph — nodes, typed edges, `build_call_graph()` |
 | `agent.jac` | The intelligence: `RepIntent` enum, the `by llm()` functions, and the walkers (`NegotiationAgent` for full-loop runs, `NegotiationTurn` for one-hop-per-webhook telephony) + MockLLM tests |
 | `main.jac` | Thin entry point wiring the two together |
+| `casefile.py` | Loads a markdown patient case file into agent context (`--case`) |
+| `cases/` | Example patient case files (markdown) |
 | `telephony/` | Python transport that carries a live phone call to the Jac core (see below) |
 
 The `telephony/` package is deliberately thin — **all negotiation logic stays
@@ -79,8 +81,8 @@ or network**:
 
 ```bash
 jac check main.jac                # type-check the whole project
-jac test agent.jac                # 3 negotiation tests (MockLLM)
-python -m telephony.test_flow     # 4 telephony flow tests (MockLLM)
+jac test agent.jac                # negotiation tests (MockLLM)
+python -m telephony.test_flow     # telephony flow tests (MockLLM)
 ```
 
 ## Running it
@@ -112,6 +114,25 @@ the graph one turn per exchange.
 > **Demo safely:** point `TWILIO_TO_NUMBER` at **your own phone** and role-play
 > the rep. Don't autodial a real hospital billing line — recording-consent and
 > robocall rules vary by jurisdiction.
+
+## Patient context (case files)
+
+The agent negotiates on behalf of a specific patient, described in a **single
+markdown case file** — bill, income, insurance, hardship, goals. The whole
+document is passed to the agent as context, so it argues from real specifics
+(e.g. *"income near 150% of the federal poverty level"*, *"nonprofit hospital,
+so IRS 501(r) applies"*) instead of generically.
+
+```bash
+jac run main.jac                                   # uses cases/jordan-rivera.md
+jac run main.jac -- --case cases/your-patient.md   # any case file you write
+```
+
+To add a patient, drop a markdown file in `cases/` — no code changes. The first
+`# H1` heading becomes the display name; everything else is free-form prose the
+agent reads (see `cases/jordan-rivera.md` for the shape — structure is a
+suggestion, not a requirement). The offline tests and the live phone call fall
+back to a built-in demo case when none is supplied.
 
 ---
 
