@@ -114,6 +114,23 @@ sem generate_line.transcript = "The call transcript so far, as alternating 'AGEN
 # a parameter to any `by llm()` function in this module, check it registered:
 #   python -c "import jaclang; from jaclang.jac0core.runtime import JacRuntime as J; \
 #              import agent; print([p.name for p in J.get_mtir_from_map('agent.<fn>').params])"
+"""Distil what worked at one tactic into transferable rules.
+
+Injecting the winning lines verbatim failed: they carried other patients'
+figures ("118% of the federal poverty level"), one call's plan terms
+("$93.33 per month"), and unfilled placeholders ("[Patient Name]") into calls
+they had nothing to do with. Rules cannot carry any of that, and the caller
+rejects any rule that does - see `clean_rule` in sim.jac.
+
+The losing lines matter as much as the winning ones: without them this is a
+model summarising its own highlight reel.
+"""
+def distill_playbook(tactic: str, winning: list[str], losing: list[str]) -> list[str] by llm();
+sem distill_playbook = "You are analysing a negotiation agent's phone calls with hospital billing departments to write it a short playbook. Compare lines that moved the representative toward agreement against lines that did not, and write 3 tactics the agent should follow at this stage of the call. Each tactic must name a concrete action and when to take it - not a sentiment. Write them so they apply to ANY patient and ANY hospital: never include a specific number, percentage, dollar amount, name, or bracketed placeholder, because the figures in these examples belong to other patients and would be wrong for the next call. Prefer a tactic you can see actually caused the representative to move. Keep each tactic under 50 words and state it as a plain instruction - do not number or label them.";
+sem distill_playbook.tactic = "The stage of the call: 'opening' (first ask about assistance), 'counter_offer' (proposing something specific), or 'escalation' (asking for someone with authority).";
+sem distill_playbook.winning = "Agent lines that measurably moved the representative toward agreement.";
+sem distill_playbook.losing = "Agent lines from calls that ended without an arrangement.";
+
 def rep_reply(transcript: list[str]) -> str by fast();
 sem rep_reply = "You are playing a hospital billing department representative on a phone call. The first transcript entry, prefixed 'PERSONA:', describes exactly who you are - your authority to approve things, what you know about the hospital's assistance programs, your disposition, how closely you stick to a script, and how much you want the call to end. Follow it for the entire call. Respond naturally and briefly to the agent's most recent line, staying consistent with everything said earlier. Stay in character even when the agent is persuasive - do not become helpful just because they were polite.";
 sem rep_reply.transcript = "The call so far. The first entry is 'PERSONA: ...' describing the rep you are playing; the rest are alternating 'AGENT: ...' and 'REP: ...' lines. Reply as the REP's next line only.";
@@ -170,7 +187,7 @@ walker NegotiationAgent {
         # Hand this node's learned exemplars to the generator. `incl_info`
         # re-reads this dict per call, so the walker's position decides which
         # examples the model sees - the traversal IS the retrieval.
-        exemplar_ctx["exemplars"] = here.exemplars;
+        exemplar_ctx["playbook"] = here.playbook;
         exemplar_ctx["assistance"] = self.assistance_facts();
         line = generate_line(here.label, self.transcript);
         self.transcript.append("AGENT: " + line);
@@ -308,7 +325,7 @@ walker NegotiationTurn {
         if self.rep_utterance == "" {
             here.visit_count += 1;
             self.tactic_path.append(here.label);
-            exemplar_ctx["exemplars"] = here.exemplars;
+            exemplar_ctx["playbook"] = here.playbook;
             self.agent_line = generate_line(here.label, self.transcript);
             self.transcript.append("AGENT: " + self.agent_line);
             self.agent_lines.append(self.agent_line);
@@ -544,7 +561,7 @@ test "real 501(r) facts reach the generator when patient details are supplied" {
     assert facts["fpl_percent"] == 176;
     assert facts["hospital"] == "Mass General Brigham";
     assert "60% or more" in facts["policy_quote"];
-    assert len(facts["programs_to_name"]) > 0;
+    assert len(list(facts["programs_to_name"])) > 0;
 }
 
 test "no patient details means no invented thresholds" {
@@ -559,11 +576,11 @@ test "no patient details means no invented thresholds" {
     assert exemplar_ctx["assistance"] == {};
 }
 
-test "exemplars on a node reach the generator via incl_info" {
-    # The retrieval path: walker lands on a node, that node's exemplars go
-    # into exemplar_ctx, and the next generate_line call sees them.
+test "a node's playbook reaches the generator via incl_info" {
+    # The retrieval path: walker lands on a node, that node's playbook goes
+    # into exemplar_ctx, and the next generate_line call sees it.
     opening = get_or_build_call_graph();
-    opening.exemplars = ["EXEMPLAR-ALPHA"];
+    opening.playbook = ["RULE-ALPHA"];
 
     global llm;
     global fast;
@@ -574,6 +591,6 @@ test "exemplars on a node reach the generator via incl_info" {
 
     opening spawn NegotiationAgent(record_call=False);
 
-    assert exemplar_ctx["exemplars"] == ["EXEMPLAR-ALPHA"];
-    opening.exemplars = [];
+    assert exemplar_ctx["playbook"] == ["RULE-ALPHA"];
+    opening.playbook = [];
 }

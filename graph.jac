@@ -24,6 +24,10 @@ node Tactic {
     # Winning lines previously spoken from this tactic. Retrieved at
     # generation time - this list IS the learned artifact.
     has exemplars: list[str] = [];
+    # Transferable tactics distilled from what worked at this node. Unlike raw
+    # exemplars, these carry no patient-specific figures - a rule cannot leak
+    # another patient's poverty-level percentage or plan terms into this call.
+    has playbook: list[str] = [];
     has visit_count: int = 0;
 }
 sem Tactic = "A phase of a hospital-billing negotiation the agent can be in.";
@@ -110,8 +114,11 @@ def save_exemplars(path: str) -> int {
         opening, [opening ->:SoftNo:->][0], [opening ->:NeedsEscalation:->][0]
     ];
     for tactic in tactics {
-        banks[tactic.label] = list(tactic.exemplars);
-        total += len(tactic.exemplars);
+        banks[tactic.label] = {
+            "exemplars": list(tactic.exemplars),
+            "playbook": list(tactic.playbook)
+        };
+        total += len(tactic.playbook);
     }
     with open(path, "w") as f {
         json.dump(banks, f, indent=2);
@@ -137,8 +144,18 @@ def load_exemplars(path: str) -> int {
         opening, [opening ->:SoftNo:->][0], [opening ->:NeedsEscalation:->][0]
     ];
     for tactic in tactics {
-        tactic.exemplars = list(banks.get(tactic.label, []));
-        total += len(tactic.exemplars);
+        raw = banks.get(tactic.label, {});
+        # Tolerate the older flat shape ({label: [lines]}) as well as the
+        # current one ({label: {exemplars: [], playbook: []}}).
+        if isinstance(raw, list) {
+            tactic.exemplars = list(raw);
+            tactic.playbook = [];
+        } else {
+            entry: dict = dict(raw);
+            tactic.exemplars = list(entry.get("exemplars", []));
+            tactic.playbook = list(entry.get("playbook", []));
+        }
+        total += len(tactic.playbook) + len(tactic.exemplars);
     }
     return total;
 }

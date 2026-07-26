@@ -109,8 +109,9 @@ def test_learned_exemplars_reach_a_live_call():
 
     path = os.path.join(tempfile.mkdtemp(), "exemplars.json")
     with open(path, "w") as f:
-        json.dump({"opening": ["LEARNED-OPENING-LINE"],
-                   "counter_offer": [], "escalation": []}, f)
+        json.dump({"opening": {"exemplars": [], "playbook": ["LEARNED-OPENING-RULE"]},
+                   "counter_offer": {"exemplars": [], "playbook": []},
+                   "escalation": {"exemplars": [], "playbook": []}}, f)
 
     assert core.load_learned_exemplars(path) == 1
     _run(
@@ -118,7 +119,7 @@ def test_learned_exemplars_reach_a_live_call():
         fast_outputs=[agent.RepIntent.HARD_NO],
         rep_lines=["No."],
     )
-    assert agent.exemplar_ctx["exemplars"] == ["LEARNED-OPENING-LINE"]
+    assert agent.exemplar_ctx["playbook"] == ["LEARNED-OPENING-RULE"]
 
     core.load_learned_exemplars(os.path.join(tempfile.mkdtemp(), "absent.json"))
 

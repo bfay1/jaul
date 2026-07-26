@@ -25,7 +25,7 @@ exemplar it mined.
 import time;
 import os;
 import from graph { get_or_build_call_graph, CallRecord, save_exemplars, SoftNo, NeedsEscalation }
-import from agent { NegotiationAgent }
+import from agent { NegotiationAgent, distill_playbook }
 
 
 # --- The rep roster ----------------------------------------------------------
@@ -46,11 +46,11 @@ glob MINE_PERSONAS: dict[str, str] = {
 };
 
 glob HELDOUT_PERSONAS: dict[str, str] = {
-    "runaround": "You never resolve anything. You transfer, give another department's number, say the caller has reached the wrong team, or suggest calling back later. You are polite and completely unproductive.",
+    "runaround": "You never resolve anything on your own. You transfer, give another department's number, say the caller has reached the wrong team, or suggest calling back later. You are polite and unproductive. CONCESSION: if the caller explicitly declines the transfer and insists you handle it now, or asks for your name and a reference number for the record, you stop deflecting and engage. At that point you CAN open an application and state concrete terms.",
 
-    "false_yes": "You sound warm and agreeable and commit to absolutely nothing. You say 'of course', 'I'll make a note of that', 'we can definitely look into it', 'that shouldn't be a problem' - but you never state a dollar amount, a percentage, a term, or a rate. Never give concrete numbers.",
+    "false_yes": "You sound warm and agreeable and avoid committing. You say 'of course', 'I'll make a note of that', 'we can look into it' - and you do NOT volunteer any dollar amount, percentage, term, or rate. CONCESSION: if the caller explicitly asks you to state the specific figure, term, or rate, or asks for confirmation in writing, you stop hedging and give one concrete commitment with real numbers. Vague pressure does not work; a direct request for a specific number does.",
 
-    "upseller": "You steer every conversation toward a financed payment plan at 24% APR with a setup fee, and present it as the solution. You avoid mentioning charity care or income-based discounts. If the caller names those directly, you claim the payment plan is faster and easier."
+    "upseller": "You steer every conversation toward a financed payment plan at 24% APR with a setup fee, and present it as the solution. You avoid mentioning charity care or income-based discounts. If the caller names those directly, you claim the payment plan is faster and easier. CONCESSION: if the caller refuses the financed plan outright and insists on the charity care or income-based route, you drop the upsell and process that instead, with concrete terms."
 };
 
 
@@ -186,54 +186,135 @@ def dedupe_key(line: str) -> str {
 }
 
 
-"""Mine winning lines out of the recorded calls and onto the tactic nodes."""
-def curate(k: int = 4) -> int {
+"""Reject a distilled rule that leaked patient specifics, or that says nothing.
+
+Enforced in code, not asked for in the prompt. Verbatim exemplars regressed the
+first run precisely because they carried other patients' figures into calls they
+had nothing to do with, and a rule can do the same.
+
+The check is deliberately narrow: it targets *patient* numbers, not every
+digit. Statutory citations like 501(r) are exactly what we want a rule to name,
+so they are stripped before the digit test rather than triggering it.
+"""
+glob LEGAL_CITATIONS: list[str] = ["501(r)", "501(c)(3)", "501c3"];
+
+def clean_rule(rule: str) -> str {
+    r = rule.strip().strip("-").strip();
+    # The model sometimes labels its output ("TACTIC 2: ..."); the label is not
+    # part of the rule and its digit would trip the patient-figure check.
+    if ":" in r {
+        head = r.split(":")[0];
+        if len(head.split()) <= 3 and head.upper().startswith("TACTIC") {
+            r = r.split(":", 1)[1].strip();
+        }
+    }
+    if r == "" {
+        return "";
+    }
+    probe: str = r;
+    for cite in LEGAL_CITATIONS {
+        probe = probe.replace(cite, "");
+    }
+    # Any digit left after removing statutory citations is a patient figure -
+    # a poverty-level percentage, a dollar amount, a plan term.
+    for ch in probe {
+        if ch.isdigit() {
+            return "";
+        }
+    }
+    for bad in ["$", "[", "]", "{", "}"] {
+        if bad in probe {
+            return "";
+        }
+    }
+    words = r.split();
+    if len(words) < 5 or len(words) > 120 {
+        return "";
+    }
+    return r;
+}
+
+
+"""Distil winning lines into a transferable playbook per tactic node."""
+def curate(k: int = 3) -> int {
     recs = [root -->[?:CallRecord, arm == "mine"]];
-    cands: list[Candidate] = [];
+    wins: list[Candidate] = [];
+    losing_by_tactic: dict[str, list[str]] = {};
+
     for r in recs {
-        if r.outcome != "deal_reached" {
-            continue;
-        }
-        if deal_quality(r.outcome, r.deal_terms) != "good" {
-            continue;
-        }
         parts = r.call_id.split("-");
         pkey: str = parts[1] if len(parts) > 1 else "";
-        diff: float = PERSONA_DIFFICULTY.get(pkey, 1.0);
-        for c in credit_lines(r, diff) {
-            cands.append(c);
+        won = r.outcome == "deal_reached" and deal_quality(r.outcome, r.deal_terms) == "good";
+        if won {
+            diff: float = PERSONA_DIFFICULTY.get(pkey, 1.0);
+            for c in credit_lines(r, diff) {
+                wins.append(c);
+            }
+        } else {
+            i = 0;
+            while i < len(r.agent_lines) and i < len(r.tactic_path) {
+                t = r.tactic_path[i];
+                if t not in losing_by_tactic {
+                    losing_by_tactic[t] = [];
+                }
+                if len(losing_by_tactic[t]) < 6 {
+                    losing_by_tactic[t].append(r.agent_lines[i]);
+                }
+                i += 1;
+            }
         }
     }
 
     opening = get_or_build_call_graph();
     counter = [opening ->:SoftNo:->][0];
     escalation = [opening ->:NeedsEscalation:->][0];
-    by_label: dict[str, list[str]] = {};
+    total = 0;
 
     for tactic in [opening, counter, escalation] {
-        pool: list[Candidate] = [c for c in cands if c.tactic == tactic.label];
+        pool: list[Candidate] = [c for c in wins if c.tactic == tactic.label];
         pool.sort(key=lambda c: Candidate -> float : -c.score);
-        picked: list[str] = [];
+        winning_lines: list[str] = [];
         seen: list[str] = [];
         for c in pool {
-            if len(picked) >= k {
-                break;
-            }
             key = dedupe_key(c.line);
             if key in seen {
                 continue;
             }
             seen.append(key);
-            picked.append(c.line);
+            winning_lines.append(c.line);
+            if len(winning_lines) >= 8 {
+                break;
+            }
         }
-        tactic.exemplars = picked;
-        by_label[tactic.label] = picked;
-    }
+        if len(winning_lines) == 0 {
+            print(f"  {tactic.label:14} <- no winning lines, playbook left empty");
+            tactic.playbook = [];
+            continue;
+        }
 
-    total = 0;
-    for (lbl, lines) in by_label.items() {
-        print(f"  {lbl:14} <- {len(lines)} exemplars");
-        total += len(lines);
+        raw = distill_playbook(tactic.label, winning_lines,
+                               list(losing_by_tactic.get(tactic.label, [])));
+        rules: list[str] = [];
+        rejected = 0;
+        for candidate in raw {
+            cleaned = clean_rule(candidate);
+            if cleaned == "" {
+                rejected += 1;
+                print(f"       REJECTED({len(candidate.split())}w): {candidate[:200]}");
+                continue;
+            }
+            rules.append(cleaned);
+            if len(rules) >= k {
+                break;
+            }
+        }
+        tactic.playbook = rules;
+        tactic.exemplars = [];
+        total += len(rules);
+        print(f"  {tactic.label:14} <- {len(rules)} rules from {len(winning_lines)} wins ({rejected} rejected)");
+        for rl in rules {
+            print(f"       - {rl}");
+        }
     }
     return total;
 }
