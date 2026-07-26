@@ -1,0 +1,79 @@
+{
+  "_about": {
+    "purpose": "Real hospital financial-assistance facts the agent can cite on a call, instead of asking open-endedly whether 'any programs' exist. US nonprofit hospitals must publish a Financial Assistance Policy under IRS 501(r), so this is public information.",
+    "verification": "Every hospital entry marked verified:true was read from the hospital's own published policy, not from a summary site. Several aggregator sites publishing 'hospital financial assistance 2026' guides were checked and found to misstate thresholds - one reported Mass General Brigham as offering free care under 300% FPL when the published policy says discounts of 60% or more. Do not add entries from those sites.",
+    "no_public_corpus": "There is no bulk machine-readable dataset of FAP terms. The Lown Institute has reviewed ~2,500 hospitals but publishes per-hospital pages, not a download. Entries here are added by hand from primary sources."
+  },
+
+  "federal_poverty_guidelines": {
+    "year": 2026,
+    "source": "HHS ASPE, https://aspe.hhs.gov/topics/poverty-economic-mobility/poverty-guidelines",
+    "verified": true,
+    "note": "Hospital thresholds are expressed as a percentage of these figures. This table is what converts '300% FPL' into a dollar number for a specific household, which is the single most useful thing the agent can do with it.",
+    "contiguous_48_and_dc": {
+      "1": 15960, "2": 21640, "3": 27320, "4": 33000,
+      "5": 38680, "6": 44360, "7": 50040, "8": 55720,
+      "each_additional": 5680
+    },
+    "alaska": { "1": 19950, "each_additional": 7100 },
+    "hawaii": { "1": 18360, "each_additional": 6530 }
+  },
+
+  "national_priors": {
+    "source": "Lown Institute, hospital financial assistance and debt collection policies report (sample of ~2,500 hospitals, data collected June 2024 - April 2025), https://lownhospitalsindex.org/report-hospital-financial-assistance-and-debt-collection-policies/",
+    "verified": true,
+    "note": "Use these when the specific hospital is unknown. They let the agent say what is *typical* and ask the rep to confirm their own figure, which is far stronger than asking whether a program exists at all.",
+    "most_common_free_care_fpl_pct": 200,
+    "free_care_fpl_pct_range": [100, 600],
+    "common_discount_ceiling_fpl_pct": 400,
+    "pct_hospitals_limiting_by_residency": 42,
+    "pct_hospitals_limiting_to_uninsured": 14
+  },
+
+  "hospitals": [
+    {
+      "key": "mass_general_brigham",
+      "name": "Mass General Brigham",
+      "verified": true,
+      "source": "https://www.massgeneralbrigham.org/content/dam/mgb-global/en/patient-care/patient-and-visitor-information/financial-assistance/documents/assistance-information/financial-assistance-summary-english.pdf",
+      "policy_updated": "2026-01",
+      "discount_fpl_pct": 300,
+      "discount_min_pct": 60,
+      "free_care_fpl_pct": null,
+      "hardship_provision": "Patients above the income threshold may still qualify if medical bills exceed 40% of annual income.",
+      "hardship_bills_pct_of_income": 40,
+      "interest_free_payment_plan": true,
+      "application_required": true,
+      "application_is_free": true,
+      "quotable": "Discounts of 60% or more may be available for medically necessary care for patients whose income is less than 300% of the Federal Poverty Guideline. Higher income patients may qualify if their medical bills are over 40% of their annual income.",
+      "note": "Do NOT describe this as free care under 300% FPL - the published policy says discounts of 60% or more, which is different. Several summary sites get this wrong."
+    },
+    {
+      "key": "cleveland_clinic",
+      "name": "Cleveland Clinic",
+      "verified": true,
+      "source": "https://my.clevelandclinic.org/patients/billing-finance/financial-assistance",
+      "discount_fpl_pct": 400,
+      "free_care_fpl_pct": null,
+      "interest_free_payment_plan": null,
+      "application_required": true,
+      "medicaid_screening_required": true,
+      "quotable": "Family income up to 400% of the Federal Poverty Level is considered for the Financial Assistance Program.",
+      "note": "Public page states the 400% ceiling only; the free-care threshold and sliding-scale bands live in the downloadable policy PDF and are not yet captured here. Cooperating with Medicaid screening is a stated precondition."
+    }
+  ],
+
+  "levers": {
+    "_note": "Program types worth naming explicitly on a call. Naming a specific mechanism is what separates this from 'do you have any programs?'",
+    "items": [
+      "Charity care / financial assistance under the hospital's 501(r) policy",
+      "Sliding-scale discount for income above the free-care threshold",
+      "Medical hardship or catastrophic provision keyed to bills as a share of income, which applies even at higher incomes",
+      "Interest-free monthly payment plan",
+      "Prompt-pay or self-pay discount",
+      "Itemized bill review for billing and coding errors",
+      "Amounts Generally Billed cap - 501(r)(5) forbids charging FAP-eligible patients more than amounts generally billed to insured patients",
+      "Retroactive application to an already-billed or already-in-collections account"
+    ]
+  }
+}
