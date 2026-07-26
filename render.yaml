@@ -1,0 +1,29 @@
+# Render Blueprint for the telephony webhook server (telephony/server.py).
+# Deploy: push this repo to GitHub, then in Render -> New -> Blueprint, point
+# it at bfay1/jaul. Render reads this file and creates the service below.
+#
+# Secrets (sync: false) are NOT set here - Render prompts for them in its
+# dashboard on first deploy, so real values never touch the repo.
+services:
+  - name: jaul-telephony
+    type: web
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn telephony.server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.14"
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
+        sync: false
+      - key: TWILIO_TO_NUMBER
+        sync: false
+      # PUBLIC_BASE_URL is intentionally NOT set here: the server falls back to
+      # Render's own RENDER_EXTERNAL_URL automatically (see telephony/server.py).

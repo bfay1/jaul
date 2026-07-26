@@ -1,8 +1,16 @@
 """FastAPI webhook server Twilio drives during a live call.
 
-Run locally:  uvicorn telephony.server:app --port 8080
-Expose it (Twilio must reach it):  ngrok http 8080  -> set PUBLIC_BASE_URL
-Then place the call:  python -m telephony.dial
+Local dev (URL changes every restart - fine for quick iteration):
+  uvicorn telephony.server:app --port 8080
+  ngrok http 8080  -> copy the https URL into PUBLIC_BASE_URL in .env
+  python -m telephony.dial
+
+Persistent deploy (stable URL - see render.yaml / README "Deploying"):
+  Render sets RENDER_EXTERNAL_URL automatically, so no PUBLIC_BASE_URL is
+  needed on the server itself. After deploying, copy the printed
+  https://<service>.onrender.com URL into PUBLIC_BASE_URL in your LOCAL .env
+  so `python -m telephony.dial` (run from your machine) knows where to send
+  the outbound call.
 
 Twilio flow:
   outbound call --> POST /twiml/start  (agent's opening line + <Gather>)
@@ -19,14 +27,22 @@ from telephony import voice
 
 app = FastAPI(title="jaul telephony")
 
-# One session per Twilio CallSid. In-memory is fine for a single-process demo;
-# swap for a shared store if you scale the server out.
+# One session per Twilio CallSid. In-memory is fine for a single always-on
+# process (local uvicorn, or one Render instance); it would NOT survive across
+# serverless invocations or multiple instances - swap for a shared store if you
+# ever scale this out.
 _sessions: dict[str, NegotiationSession] = {}
 _transport = TurnBasedTransport()
 
 
 def _turn_url(request: Request) -> str:
-    base = os.environ.get("PUBLIC_BASE_URL", str(request.base_url).rstrip("/"))
+    # Explicit PUBLIC_BASE_URL wins (e.g. local ngrok); otherwise Render already
+    # tells us our own public URL; otherwise fall back to what the request saw.
+    base = (
+        os.environ.get("PUBLIC_BASE_URL")
+        or os.environ.get("RENDER_EXTERNAL_URL")
+        or str(request.base_url).rstrip("/")
+    )
     return f"{base.rstrip('/')}/twiml/turn"
 
 

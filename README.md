@@ -62,6 +62,10 @@ in Jac.** Python only handles the phone:
 | `telephony/dial.py` | Places the outbound call (real Twilio; behind env config) |
 | `telephony/test_flow.py` | Offline tests of the whole call flow — no Twilio/network/key |
 
+`render.yaml` and `.python-version` configure a persistent deploy of the
+webhook server on Render (see "Deploying" below) — a stable alternative to
+restarting ngrok every session.
+
 ---
 
 ## Setup
@@ -101,11 +105,22 @@ jac run main.jac
 
 ### 2. Live phone call (needs `ANTHROPIC_API_KEY` + Twilio + a public URL)
 
+The webhook server needs to be reachable from the public internet — either a
+temporary local tunnel (fast iteration, URL changes every restart) or a real
+deploy (stable URL, no restart-and-repaste). Pick one:
+
+**a) Local + ngrok (quick iteration):**
 ```bash
 set -a; source .env; set +a
 uvicorn telephony.server:app --port 8080     # 1) webhook server
 ngrok http 8080                              # 2) copy the https URL into PUBLIC_BASE_URL in .env
 python -m telephony.dial                     # 3) places the call
+```
+
+**b) Deployed on Render (stable URL — see "Deploying" below):**
+```bash
+set -a; source .env; set +a          # PUBLIC_BASE_URL = your Render URL (one-time)
+python -m telephony.dial
 ```
 
 Answer the phone, play the billing rep, and the agent negotiates live — walking
@@ -114,6 +129,42 @@ the graph one turn per exchange.
 > **Demo safely:** point `TWILIO_TO_NUMBER` at **your own phone** and role-play
 > the rep. Don't autodial a real hospital billing line — recording-consent and
 > robocall rules vary by jurisdiction.
+
+## Deploying (Render)
+
+Solves the "ngrok URL changes every time I restart it" problem: Render runs
+`telephony/server.py` as a persistent process with a stable `https://` URL, so
+`PUBLIC_BASE_URL` only needs to be set once, ever.
+
+1. Push this repo to GitHub (already done for `bfay1/jaul`).
+2. In the [Render dashboard](https://dashboard.render.com): **New → Blueprint**,
+   point it at the repo. Render reads `render.yaml` and creates the
+   `jaul-telephony` web service automatically.
+3. Render prompts for the secret env vars marked `sync: false` in
+   `render.yaml`: `ANTHROPIC_API_KEY`, `TWILIO_ACCOUNT_SID`,
+   `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `TWILIO_TO_NUMBER`. Fill these in
+   the dashboard — they're never committed to the repo.
+4. Deploy. Render assigns a URL like `https://jaul-telephony.onrender.com` —
+   the server finds this itself via Render's auto-injected
+   `RENDER_EXTERNAL_URL`, so **no `PUBLIC_BASE_URL` is needed on Render**.
+5. **One local step:** copy that URL into `PUBLIC_BASE_URL` in your *local*
+   `.env` — `telephony/dial.py` runs on your machine and needs to know where
+   to send the outbound call.
+
+```bash
+# .env, after step 4:
+PUBLIC_BASE_URL=https://jaul-telephony.onrender.com
+```
+
+```bash
+set -a; source .env; set +a
+python -m telephony.dial
+```
+
+**Free-tier note:** Render's free plan sleeps the service after ~15 min idle;
+the first request after sleep takes a few extra seconds to spin up. Fine for a
+demo — just place the call right after opening the dashboard, or leave the
+`/health` endpoint open in a tab beforehand to keep it warm.
 
 ## Patient context (case files)
 
