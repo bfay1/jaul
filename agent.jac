@@ -118,6 +118,81 @@ walker NegotiationAgent {
 }
 
 
+# --- Single-turn walker (telephony transport) -------------------------------
+# NegotiationAgent above runs a whole call in one blocking loop (great for the
+# mock demo and tests). A live phone call is different: each turn arrives as a
+# separate Twilio webhook, so the walker must advance ONE hop per spawn and
+# hand control back. NegotiationTurn does exactly that - the transport layer
+# (telephony/) spawns a fresh one each webhook, on the node the last turn ended
+# on, passing in what the rep just said. The traversal logic is identical; only
+# who supplies the rep's line differs (a real human, not `rep_reply`).
+
+walker NegotiationTurn {
+    has rep_utterance: str = "";           # empty on the opening turn
+    has transcript: list[str] = [];        # carried across turns by the caller
+    has agent_line: str = "";              # OUT: what to speak this turn
+    has status: str = "in_progress";       # OUT: in_progress | deal_reached | dead_end
+    has end_node: Tactic | None = None;    # OUT: node to resume from next turn
+
+    can step with Opening | CounterOffer | Escalation entry {
+        # No rep utterance yet => we just arrived at this tactic (either the
+        # call's opening, or a hop taken this same spawn). Speak its line and
+        # stop, leaving `end_node` here for the next webhook to resume from.
+        if self.rep_utterance == "" {
+            self.agent_line = generate_line(here.label, self.transcript);
+            self.transcript.append("AGENT: " + self.agent_line);
+            self.end_node = here;
+            disengage;
+        }
+
+        # We have the rep's reply to the line we spoke last turn: classify it,
+        # then traverse exactly one typed edge. Clearing rep_utterance means the
+        # node we land on takes the branch above and generates the next line.
+        self.transcript.append("REP: " + self.rep_utterance);
+        intent = classify_response(self.rep_utterance);
+        self.rep_utterance = "";
+
+        if intent == RepIntent.SOFT_NO {
+            visit [here ->:SoftNo:->] else { self.dead_end(here); }
+        } elif intent == RepIntent.STONEWALLING {
+            visit [here ->:Stonewalling:->] else { self.dead_end(here); }
+        } elif intent == RepIntent.NEEDS_ESCALATION {
+            visit [here ->:NeedsEscalation:->] else { self.dead_end(here); }
+        } elif intent == RepIntent.ACCEPTED {
+            visit [here ->:Accepted:->] else { self.dead_end(here); }
+        } else {
+            visit [here ->:HardNo:->] else { self.dead_end(here); }
+        }
+    }
+
+    can arrive_deal with DealReached entry {
+        self.status = "deal_reached";
+        self.agent_line = "Wonderful - thank you so much, that's a real help. Have a great day.";
+        self.transcript.append("AGENT: " + self.agent_line);
+        self.end_node = here;
+        disengage;
+    }
+
+    can arrive_dead_end with DeadEnd entry {
+        self.status = "dead_end";
+        self.agent_line = "I understand - thank you for taking the time to look into it for me.";
+        self.transcript.append("AGENT: " + self.agent_line);
+        self.end_node = here;
+        disengage;
+    }
+
+    def dead_end(stuck: Tactic) {
+        # No typed edge out for this classification: end the call gracefully
+        # rather than crash. Stays on the current node.
+        self.status = "dead_end";
+        self.agent_line = "I understand - thank you for taking the time to look into it for me.";
+        self.transcript.append("AGENT: " + self.agent_line);
+        self.end_node = stuck;
+        disengage;
+    }
+}
+
+
 # --- Tests (MockLLM - no API key or network needed) --------------------------
 
 test "rep agrees immediately and the call reaches a deal" {
