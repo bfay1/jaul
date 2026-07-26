@@ -21,13 +21,17 @@ _ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 _DEFAULT_MODEL_ID = "eleven_flash_v2_5"
 _TIMEOUT_SECONDS = 10
 
-# Twilio phone calls are 8kHz mu-law under the hood. ElevenLabs defaults to a
-# 44.1kHz MP3, which Twilio then has to transcode for every turn - exactly the
-# choppy, cutting-in-and-out artifacts a mismatched-format transcode produces.
-# Asking ElevenLabs for ulaw_8000 directly means Twilio's <Play> gets audio
-# already in its native telephony format, with no transcoding step at all.
-_OUTPUT_FORMAT = "ulaw_8000"
-_CONTENT_TYPE = "audio/ulaw"
+# `<Play>` fetches a self-contained audio FILE and needs to detect its own
+# format - it is NOT the same mechanism as Twilio Media Streams (a WebSocket
+# that negotiates raw ulaw_8000 frames once, with no per-chunk headers). An
+# earlier version of this code requested ulaw_8000 for use with <Play>, which
+# is headerless raw PCM with no container - exactly the wrong shape for a
+# fetched file, and the likely cause of choppy/garbled playback. wav_8000 is a
+# proper RIFF/WAVE container (a real, self-describing file) already at
+# Twilio's native 8kHz sample rate, so <Play> parses it correctly with
+# minimal transcoding.
+_OUTPUT_FORMAT = "wav_8000"
+_CONTENT_TYPE = "audio/wav"
 
 # clip_id -> (audio_bytes, content_type). In-memory only: fine for a
 # single-process demo server (same assumption server.py's `_sessions` dict

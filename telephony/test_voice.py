@@ -67,27 +67,28 @@ def test_disabled_without_voice_id():
 
 def test_synthesize_success_caches_and_returns_clip():
     with _temp_env(ELEVENLABS_API_KEY="fake-key", ELEVENLABS_VOICE_ID="voice-123"):
-        with _mock_post(lambda *a, **k: _FakeResponse(200, b"fake-ulaw-bytes")):
+        with _mock_post(lambda *a, **k: _FakeResponse(200, b"fake-wav-bytes")):
             clip_id = voice.synthesize("Hi there")
             assert clip_id is not None
-            assert voice.get_clip(clip_id) == (b"fake-ulaw-bytes", "audio/ulaw")
+            assert voice.get_clip(clip_id) == (b"fake-wav-bytes", "audio/wav")
 
 
-def test_synthesize_requests_telephony_native_format():
-    # Twilio calls are 8kHz mu-law; asking ElevenLabs for anything else (e.g.
-    # its default 44.1kHz MP3) means Twilio transcodes on every turn, which is
-    # exactly what produced choppy, cutting-in-and-out audio on a live call.
+def test_synthesize_requests_telephony_sample_rate_as_a_real_file():
+    # <Play> fetches a self-contained FILE, unlike Media Streams (which
+    # expects raw ulaw_8000 frames with no per-chunk header). wav_8000 is a
+    # real RIFF/WAVE container at Twilio's native sample rate: a proper file
+    # <Play> can parse, with minimal transcoding.
     captured = {}
 
     def _capture(*a, **k):
         captured.update(k)
-        return _FakeResponse(200, b"fake-ulaw-bytes")
+        return _FakeResponse(200, b"fake-wav-bytes")
 
     with _temp_env(ELEVENLABS_API_KEY="fake-key", ELEVENLABS_VOICE_ID="voice-123"):
         with _mock_post(_capture):
             voice.synthesize("Hi there")
 
-    assert captured["params"]["output_format"] == "ulaw_8000"
+    assert captured["params"]["output_format"] == "wav_8000"
 
 
 def test_synthesize_falls_back_on_bad_status():
