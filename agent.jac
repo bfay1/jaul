@@ -17,7 +17,12 @@ import from graph {
 # Auth comes from the ANTHROPIC_API_KEY env var (see .env / .env.example) -
 # never hardcode a key here or in jac.toml. The `Model | MockLLM` union lets
 # the tests below swap in a deterministic mock without an API key.
-glob llm: Model | MockLLM = Model(model_name="claude-sonnet-5");
+#
+# Model choice is constrained by byllm 0.6.19: it always sends a `temperature`
+# on the call, and claude-sonnet-5 rejects that outright ("`temperature` is
+# deprecated for this model"), which 500s every live turn. sonnet-4-6 still
+# accepts it. Revisit if byllm is ever upgraded.
+glob llm: Model | MockLLM = Model(model_name="claude-sonnet-4-6");
 
 
 # --- LLM-backed intelligence -------------------------------------------------
