@@ -55,12 +55,27 @@ glob ALL_INTENTS: list[str] = [
 
 
 """One candidate edge out of a node - lit if the walker took it, dim if not."""
-def:pub EdgeOption(intent: str, target: str, taken: bool) -> JsxElement {
+def:pub EdgeOption(intent: str, target: str, gist: str, taken: bool) -> JsxElement {
     return <div className={"opt" + (" opt-taken" if taken else "")}>
         <span className="opt-stub"></span>
         <span className="opt-edge">{intent}</span>
-        <span className="opt-gloss">{intent_label(intent)}</span>
+        <span className="opt-gloss">{gist if taken else intent_label(intent)}</span>
         <span className="opt-target">{("→ " + pretty(target)) if taken else ""}</span>
+    </div>;
+}
+
+
+"""The dialogue behind one taken edge - the two speakers kept visually apart."""
+def:pub Exchange(t: TurnView) -> JsxElement {
+    return <div className="exchange">
+        <div className="say say-agent">
+            <span className="who">Agent</span>
+            <p>{t.agent}</p>
+        </div>
+        <div className="say say-rep">
+            <span className="who">Billing rep</span>
+            <p>{t.rep}</p>
+        </div>
     </div>;
 }
 
@@ -89,23 +104,14 @@ def:pub Step(t: TurnView, index: int, expanded: bool, onToggle: Callable[[int], 
         <div className="link">
             <div className="fan">
                 {for opt in ALL_INTENTS {
-                    <EdgeOption intent={opt} target={t.next_tactic}
+                    <EdgeOption intent={opt} target={t.next_tactic} gist={t.gist}
                                 taken={opt == t.intent} key={opt} />;
                 }}
             </div>
             <button className="peek" onClick={handle}>
                 {"hide exchange" if expanded else "what the rep said"}
             </button>
-            {<div className="exchange">
-                <div className="say say-agent">
-                    <span className="who">Agent</span>
-                    <p>{t.agent}</p>
-                </div>
-                <div className="say say-rep">
-                    <span className="who">Billing rep</span>
-                    <p>{t.rep}</p>
-                </div>
-            </div> if expanded else None}
+            {<Exchange t={t} /> if expanded else None}
         </div>
     </li>;
 }
@@ -118,6 +124,10 @@ def:pub app -> JsxElement {
     has open_hop: int = -1;
     has playing: bool = True;
     has loaded: bool = False;
+    # Horizontal lays the hops left-to-right, which reads more like a drawn
+    # graph but has nowhere inline to put an exchange - so in that mode the
+    # open exchange renders in one detail panel under the graph instead.
+    has horiz: bool = False;
 
     async can with entry {
         result = root spawn ReplayCall();
@@ -155,6 +165,10 @@ def:pub app -> JsxElement {
         shown = len(turns);
     }
 
+    def flip_layout(e: MouseEvent) {
+        horiz = not horiz;
+    }
+
     done = shown >= len(turns) and loaded;
 
     return <main className="page">
@@ -182,7 +196,7 @@ def:pub app -> JsxElement {
                 the reply was classified as.
             </p>
 
-            <ul className="flow">
+            <ul className={"flow flow-horiz" if horiz else "flow"}>
                 {for i in range(shown) {
                     <Step t={turns[i]} index={i} expanded={open_hop == i}
                           onToggle={toggle_hop} key={str(i)} />;
@@ -192,6 +206,10 @@ def:pub app -> JsxElement {
                 </li> if done and len(turns) > 0 else None}
             </ul>
 
+            {<div className="detail">
+                <Exchange t={turns[open_hop]} />
+            </div> if horiz and open_hop >= 0 and open_hop < shown else None}
+
             {<div className="outcome">
                 <div className="outcome-head">terms agreed</div>
                 <p>{meta.deal_terms if meta else ""}</p>
@@ -200,6 +218,9 @@ def:pub app -> JsxElement {
             <div className="controls">
                 {<button className="btn" onClick={replay}>Replay</button> if done
                  else <button className="btn btn-ghost" onClick={show_all}>Skip</button>}
+                <button className="btn btn-ghost" onClick={flip_layout}>
+                    {"Vertical" if horiz else "Horizontal"}
+                </button>
                 <span className="progress">
                     {str(shown) + " / " + str(len(turns)) + " hops"}
                 </span>

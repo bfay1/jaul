@@ -285,3 +285,45 @@ pre code { font-size: 12.5px; color: #b8c7d9; white-space: pre; }
   .page { padding: 20px 14px 44px; }
   .peek { margin-left: 0; }
 }
+
+/* --- horizontal layout -------------------------------------------------- */
+/* Same nodes and edges, laid left-to-right. The inline exchange is hidden in
+   this mode (it would blow the row height apart); the open one renders in the
+   .detail panel under the graph instead. */
+
+.flow-horiz {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  overflow-x: auto;
+  padding-bottom: 10px;
+}
+
+.flow-horiz .step { flex: none; display: flex; align-items: flex-start; }
+.flow-horiz .step-last { align-items: center; }
+.flow-horiz .nodebox { margin-top: 6px; white-space: nowrap; }
+
+.flow-horiz .link {
+  margin: 0;
+  padding: 6px 14px 0;
+  border-left: none;
+  border-top: 1px solid var(--line);
+  min-width: 210px;
+}
+
+.flow-horiz .exchange { display: none; }
+.flow-horiz .opt-stub { display: none; }
+.flow-horiz .opt { gap: 6px; }
+.flow-horiz .opt-edge { min-width: 0; }
+.flow-horiz .opt-target { margin-left: 6px; }
+.flow-horiz .peek { margin-top: 6px; }
+
+.detail {
+  margin-top: 14px;
+  padding: 12px 14px 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.detail .exchange { margin: 0; }
