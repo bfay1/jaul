@@ -78,9 +78,11 @@ directly on Jac functions via normal Python interop — no bridging layer needed
 |---|---|
 | `telephony/core.jac` | `NegotiationSession` — drives the `NegotiationTurn` walker one turn at a time, natively (`spawn`/`root`/`++>` work directly here, not through a Python bridge) |
 | `telephony/transport.jac` | `Transport` interface — `TurnBasedTransport` (Twilio Say+Gather) today, `StreamingTransport` (Media Streams) documented as a swap-in |
-| `telephony/server.jac` | FastAPI webhook app Twilio drives (`/twiml/start`, `/twiml/turn`) — plain `@app.post(...)` decorators on async Jac functions |
+| `telephony/server.jac` | FastAPI webhook app Twilio drives (`/twiml/start`, `/twiml/turn`), plus `/status` + `/live` for watching a call live on a demo screen — plain `@app.post(...)`/`@app.get(...)` decorators on Jac functions |
+| `telephony/live.html` | Static polling page served at `/live` — fetches `/status` every ~900ms; open it on a demo screen while a call runs |
 | `telephony/voice.jac` | ElevenLabs TTS — opt-in, never on the critical path |
 | `telephony/dial.jac` | Places the outbound call (real Twilio; behind env config) |
+| `telephony/demo_mock_server.jac` | Runs the server with a scripted `MockLLM` conversation so `/live` can be tested with no API key, Twilio account, or network |
 | `telephony/test_flow.jac` | Offline tests of the whole call flow — no Twilio/network/key |
 | `telephony/test_voice.jac` | Offline tests of the ElevenLabs TTS path |
 
@@ -98,6 +100,14 @@ restarting ngrok every session.
 ## Setup
 
 Requires Python 3.14.
+
+> **Use the pip `jaclang` package below, not the standalone `jac` binary from
+> the curl installer.** They're not interchangeable — this project's telephony
+> layer runs `uvicorn` importing an all-Jac package, which only works via
+> jaclang's pip-installed import hook. The standalone binary embeds its own
+> Python and can't see it (`byllm` also imports under a different path there).
+> `jac.toml` and `requirements.txt` pin identical versions on purpose; keep
+> both in sync if you ever bump one.
 
 ```bash
 git clone git@github.com:bfay1/jaul.git
@@ -131,13 +141,30 @@ set -a; source .env; set +a
 jac run main.jac
 ```
 
-### 2. Live phone call (needs `ANTHROPIC_API_KEY` + Twilio + a public URL)
+### 2. Live phone call — `jaul` (needs Twilio credentials only)
 
-The webhook server needs to be reachable from the public internet — either a
-temporary local tunnel (fast iteration, URL changes every restart) or a real
-deploy (stable URL, no restart-and-repaste). Pick one:
+```bash
+cp .env.example .env   # fill in TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER / TWILIO_TO_NUMBER
+./bin/jaul
+```
 
-**a) Local + ngrok (quick iteration):**
+`jaul` dials Twilio and points it at the **already-deployed Render server**
+(`telephony/dial.jac`'s `DEFAULT_PUBLIC_BASE_URL`) — no local server, no ngrok,
+no `PUBLIC_BASE_URL` to configure. It sources `.env` and activates `jac-env`
+for you, so this really is a one-command demo once credentials are set.
+
+Symlink it onto your `PATH` to run `jaul` bare, from anywhere:
+```bash
+ln -s "$(pwd)/bin/jaul" /usr/local/bin/jaul
+jaul
+```
+
+Answer the phone, play the billing rep, and the agent negotiates live — walking
+the graph one turn per exchange.
+
+**Running your own server instead** (e.g. local iteration before a Render
+deploy exists yet): set `PUBLIC_BASE_URL` in `.env` to override the default —
+`telephony/dial.jac` uses it if present.
 ```bash
 set -a; source .env; set +a
 uvicorn telephony.server:app --port 8080     # 1) webhook server (imports the .jac module directly)
@@ -145,18 +172,17 @@ ngrok http 8080                              # 2) copy the https URL into PUBLIC
 jac run telephony/dial.jac                   # 3) places the call
 ```
 
-**b) Deployed on Render (stable URL — see "Deploying" below):**
-```bash
-set -a; source .env; set +a          # PUBLIC_BASE_URL = your Render URL (one-time)
-jac run telephony/dial.jac
-```
-
-Answer the phone, play the billing rep, and the agent negotiates live — walking
-the graph one turn per exchange.
-
 > **Demo safely:** point `TWILIO_TO_NUMBER` at **your own phone** and role-play
 > the rep. Don't autodial a real hospital billing line — recording-consent and
 > robocall rules vary by jurisdiction.
+
+**Watch it live on a screen:** open `<server-url>/live` (e.g.
+`https://jaul-telephony.onrender.com/live`) in a browser tab before placing
+the call — it polls `/status` roughly every 900ms and renders the transcript,
+classified intent, and chosen tactic as the call progresses. To try `/live`
+without a phone call at all, run `jac run telephony/demo_mock_server.jac` and
+drive it with `curl` (see the file's docstring) — no API key, Twilio account,
+or network needed.
 
 ## Deploying (Render)
 

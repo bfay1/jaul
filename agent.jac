@@ -263,6 +263,8 @@ walker NegotiationTurn {
     has end_node: Tactic | None = None;    # OUT: node to resume from next turn
     has patient: PatientCase = demo_case();
     has hospital: Hospital | None = None;
+    has last_intent: str = "";             # OUT: this turn's RepIntent classification, "" before any reply
+    has last_move: str = "";               # OUT: this turn's chosen TacticMove, "" if terminal or none yet
 
     can step with Opening | TacticStep entry {
         # No rep utterance yet => we just arrived at this tactic (either the
@@ -282,9 +284,11 @@ walker NegotiationTurn {
         # above and generates the next line.
         self.transcript.append("REP: " + self.rep_utterance);
         intent = classify_response(self.rep_utterance);
+        self.last_intent = intent.name;
         self.rep_utterance = "";
 
         if intent == RepIntent.ACCEPTED or intent == RepIntent.HARD_NO {
+            self.last_move = "";
             terminal_node = reach_terminal(here, intent);
             visit [terminal_node];
         } else {
@@ -293,6 +297,7 @@ walker NegotiationTurn {
                 prior_experience = summarize_experience(self.hospital);
             }
             move = choose_next_tactic(self.transcript, intent, program_context(), prior_experience);
+            self.last_move = move.name;
             new_step = advance_tactic(here, intent, move);
             visit [new_step];
         }

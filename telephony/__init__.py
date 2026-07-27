@@ -12,9 +12,15 @@ of its own.
 - transport.jac Transport interface; TurnBasedTransport (Twilio Say+Gather) now,
                 StreamingTransport (Media Streams) documented as a swap-in later.
 - server.jac    FastAPI webhook app Twilio calls into (third-party @app.post(...)
-                decorators work directly on Jac async functions).
+                decorators work directly on Jac async functions). Also serves
+                /status (JSON) and /live (live.html) for watching a call happen
+                on screen during a demo.
+- live.html     Static polling page for /live - not Jac/Python, just an asset.
 - voice.jac     ElevenLabs TTS - opt-in, never on the critical path.
 - dial.jac      Places the outbound call (real Twilio; behind env config).
+- demo_mock_server.jac
+                Runs server.jac with a scripted MockLLM conversation so /live
+                can be exercised with no API key, Twilio account, or network.
 
 Everything except dial.jac runs offline with no Twilio account or network, so
 the whole conversation flow is unit-testable (see test_flow.jac / test_voice.jac).

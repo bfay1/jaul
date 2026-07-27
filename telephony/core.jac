@@ -32,6 +32,11 @@ obj NegotiationSession {
     has transcript: list[str] = [];
     has status: str = "in_progress";
     has turns: int = 0;
+    has last_intent: str = "";   # this turn's RepIntent classification, "" before any reply
+    has last_move: str = "";     # this turn's chosen TacticMove, "" if terminal or none yet
+    has patient_name: str {
+        getter -> str { return self.patient.name if self.patient is not None else "the patient"; }
+    }
 
     def postinit {
         self.hospital = get_or_create_hospital(self.hospital_name);
@@ -66,6 +71,8 @@ obj NegotiationSession {
 
         self.transcript = list(w.transcript);
         self.status = w.status;
+        self.last_intent = w.last_intent;
+        self.last_move = w.last_move;
         if w.end_node is not None {
             self.node = w.end_node;
         }

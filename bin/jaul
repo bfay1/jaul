@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# `jaul` - place a live negotiation call in one command.
+#
+# Dials Twilio, using the deployed Render server by default (no local server
+# or ngrok needed) - see telephony/dial.jac for the DEFAULT_PUBLIC_BASE_URL
+# fallback and how to override it.
+#
+# Setup once:
+#   1. cp .env.example .env, fill in TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN /
+#      TWILIO_FROM_NUMBER / TWILIO_TO_NUMBER (see README "Credentials").
+#   2. Put this repo's bin/ on your PATH, or symlink this file onto it:
+#        ln -s "$(pwd)/bin/jaul" /usr/local/bin/jaul
+#      so `jaul` works from any directory.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT"
+
+if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
+fi
+
+if [ -d jac-env ]; then
+    # shellcheck disable=SC1091
+    source jac-env/bin/activate
+fi
+
+exec jac run telephony/dial.jac

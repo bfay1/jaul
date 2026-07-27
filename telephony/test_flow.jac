@@ -41,6 +41,27 @@ test "deal via escalation" {
     );
     assert session.status == "deal_reached";
     assert any("supervisor" in ln.lower() for ln in session.transcript);
+    # ACCEPTED is terminal - no tactic move is chosen once the call is over.
+    assert session.last_intent == "ACCEPTED";
+    assert session.last_move == "";
+}
+
+test "last intent and move populate for a continuing turn" {
+    # Exposed for the /live status page: after a continuing (non-terminal)
+    # reply, both the classification and the chosen next tactic should be
+    # readable off the session.
+    session = _run(
+        outputs=[
+            "Hi, are there any financial assistance programs I might qualify for?",
+            agent.RepIntent.STONEWALLING,
+            agent.TacticMove.CITE_501R,
+            "As a nonprofit, IRS 501(r) requires you to check assistance eligibility first."
+        ],
+        rep_lines=["I really can't offer more than that."]
+    );
+    assert session.status == "in_progress";
+    assert session.last_intent == "STONEWALLING";
+    assert session.last_move == "CITE_501R";
 }
 
 test "repeated soft no climbs to escalation" {
