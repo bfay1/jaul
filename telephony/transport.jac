@@ -77,10 +77,15 @@ class TurnBasedTransport(Transport) {
             body = (
                 '<?xml version="1.0" encoding="UTF-8"?>'
                 "<Response>"
-                f'<Gather input="speech" action="{url}" method="POST" '
-                f"speechTimeout=\"{self.speech_timeout}\" language=\"{self.language}\">"
+                # voice_element plays to completion BEFORE Gather starts listening
+                # (siblings, not nested) - on speakerphone, a nested <Gather> starts
+                # listening the instant playback begins and the mic picks up the
+                # phone's own speaker output, feeding Twilio's STT garbage. A
+                # handset's earpiece has no such acoustic coupling, which is why
+                # this only broke on speaker.
                 f"{voice_element}"
-                "</Gather>"
+                f'<Gather input="speech" action="{url}" method="POST" '
+                f"speechTimeout=\"{self.speech_timeout}\" language=\"{self.language}\"/>"
                 # Rep said nothing within the gather: bounce back to reprompt.
                 f'<Redirect method="POST">{url}</Redirect>'
                 "</Response>"
