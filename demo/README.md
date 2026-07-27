@@ -40,7 +40,7 @@ open http://localhost:8123
 | File | What it is |
 |---|---|
 | `calltrace.jac` | The frozen call as a **real graph** — a `Tactic` node per phase, a typed edge per classified reply — plus the `ReplayCall` walker that traverses it. |
-| `replay.cl.jac` | The page: animated replay, the tactic chain drawing itself, the OSP notes, and the run-live instructions. |
+| `replay.cl.jac` | The page: the graph (every node fanning out all five typed edges, the taken one lit), collapsed exchanges, and a vertical/horizontal toggle. |
 | `main.jac` | Entry point; wires the server half to the client half. |
 | `app.css` | Styling. |
 | `trace.json` | The captured call, as recorded. Source of truth for `calltrace.jac`. |
@@ -76,11 +76,14 @@ That call reached a real deal: an 85% charity-care discount taking a $4,200
 balance to $630, interest-free over 12 months, plus an immediate collections
 hold.
 
+The one-line gists on each graph row are generated too, by `gist_trace.jac`.
+
 **Re-running `capture_trace.jac` overwrites `demo/trace.json` with a different
-call**, and `trace.sv.jac` will then be out of date — it holds the dialogue
+call**, and `calltrace.jac` will then be out of date — it holds the dialogue
 inline so the demo has no file-IO dependency at runtime. Only re-capture when
-you actually want a different demo call, and regenerate `trace.sv.jac`'s seed
-block from the new JSON if you do.
+you actually want a different demo call; if you do, regenerate `calltrace.jac`'s
+seed block from the new JSON **and bump its `SEED_VERSION`**, or the graph
+already persisted on the server is reused and your new call never appears.
 
 ---
 
