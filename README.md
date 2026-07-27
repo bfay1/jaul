@@ -264,21 +264,34 @@ Two different runs produce two different SVGs — that's the point.
 
 ## Credentials
 
-Everything lives in `.env` (gitignored). `.env.example` lists the names.
+Everything lives in `.env` (gitignored, never committed). `.env.example`
+lists the names, no values.
 
-**Anthropic** (the negotiation brain — required for any *real* run; tests use a
-mock instead):
-- `ANTHROPIC_API_KEY` — from the [Anthropic Console](https://console.anthropic.com).
+**Anthropic** (the negotiation brain) — **where the key needs to live depends
+on which run mode you're using:**
+- **Live phone call (`jaul`)** — needs **no local `ANTHROPIC_API_KEY`.**
+  `jaul` only dials Twilio and points it at the deployed Render server; the
+  classification/generation LLM calls run *on Render*, reading the key from
+  Render's own dashboard secret (`sync: false` in `render.yaml`, set once by
+  whoever manages that deploy — see "Deploying" above). This is deliberate:
+  it's the one path where a key never needs to touch a local `.env` at all.
+- **Local mock-rep loop (`jac run main.jac`)** — this one runs the *entire*
+  negotiation, including both sides, on your machine, so it does need its own
+  `ANTHROPIC_API_KEY` in your local `.env` (from the
+  [Anthropic Console](https://console.anthropic.com)). Offline tests
+  (`jac test ...`) use `MockLLM` and need no key at all.
 
-**Twilio** (only for a *live phone call* — the server and all tests need none):
+**Twilio** (only for a *live phone call* — the offline mock-rep loop and all
+tests need none):
 
 Twilio has no single "API key" for this. You need three things from the free
 [Twilio Console](https://console.twilio.com):
 - `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` — on the dashboard.
 - `TWILIO_FROM_NUMBER` — a Twilio phone number to call *from*.
 - `TWILIO_TO_NUMBER` — the number to call (your own phone for the demo).
-- `PUBLIC_BASE_URL` — the https URL where `telephony/server.jac` is reachable
-  (e.g. your ngrok URL).
+- `PUBLIC_BASE_URL` is **optional** — leave it unset and `jaul`/`dial.jac`
+  point at the deployed Render server by default; set it only to dial through
+  a local server/ngrok tunnel instead (see "Live phone call" above).
 
 A **free trial account works for the demo.** It comes with credit and a number;
 its only catch is that it can call *verified* numbers only — which is exactly
