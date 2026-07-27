@@ -1,31 +1,68 @@
 #!/usr/bin/env bash
 # `jaul` - place a live negotiation call in one command.
 #
+# First run bootstraps everything it can (Python venv, deps) and stops to ask
+# for Twilio credentials if they're missing - genuinely nothing else to set
+# up by hand. Re-run once .env is filled in.
+#
 # Dials Twilio, using the deployed Render server by default (no local server
 # or ngrok needed) - see telephony/dial.jac for the DEFAULT_PUBLIC_BASE_URL
-# fallback and how to override it.
-#
-# Setup once:
-#   1. cp .env.example .env, fill in TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN /
-#      TWILIO_FROM_NUMBER / TWILIO_TO_NUMBER (see README "Credentials").
-#   2. Put this repo's bin/ on your PATH, or symlink this file onto it:
-#        ln -s "$(pwd)/bin/jaul" /usr/local/bin/jaul
-#      so `jaul` works from any directory.
+# fallback and how to override it. No ANTHROPIC_API_KEY needed here: the
+# negotiation LLM calls run server-side on Render, not on this machine.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-if [ -f .env ]; then
-    set -a
-    # shellcheck disable=SC1091
-    source .env
-    set +a
+# --- 1. Python venv + deps: create/install once, silently reuse after. ---
+if [ ! -d jac-env ]; then
+    echo "jaul: no jac-env found - creating one and installing dependencies (one-time, ~a minute)..."
+    python3 -m venv jac-env
+fi
+# shellcheck disable=SC1091
+source jac-env/bin/activate
+
+# Check this venv's own bin, not `command -v` - a `jac` elsewhere on PATH
+# (another project's venv, a global install) must not fool this into
+# skipping the install into THIS venv.
+if [ ! -x jac-env/bin/jac ]; then
+    echo "jaul: installing dependencies into jac-env..."
+    pip install --quiet --upgrade pip
+    pip install --quiet -r requirements.txt
 fi
 
-if [ -d jac-env ]; then
-    # shellcheck disable=SC1091
-    source jac-env/bin/activate
+# --- 2. Credentials: can't be bootstrapped, they're yours. Ask once. ---
+if [ ! -f .env ]; then
+    cp .env.example .env
+    cat <<'EOF'
+
+jaul: created .env from .env.example - it's empty so far.
+
+Fill in your Twilio credentials (free trial account works - see README
+"Credentials"), then run `jaul` again:
+  TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, TWILIO_TO_NUMBER
+
+(No ANTHROPIC_API_KEY needed for a live call - that key lives on the
+deployed server, not here.)
+EOF
+    exit 0
+fi
+
+set -a
+# shellcheck disable=SC1091
+source .env
+set +a
+
+missing=()
+for var in TWILIO_ACCOUNT_SID TWILIO_AUTH_TOKEN TWILIO_FROM_NUMBER TWILIO_TO_NUMBER; do
+    if [ -z "${!var:-}" ]; then
+        missing+=("$var")
+    fi
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+    echo "jaul: .env is missing a value for: ${missing[*]}"
+    echo "Fill these in (see README \"Credentials\") and run \`jaul\` again."
+    exit 1
 fi
 
 exec jac run telephony/dial.jac
