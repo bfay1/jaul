@@ -10,6 +10,23 @@ using Object-Spatial Programming: the negotiation isn't a script of `if/else`
 branches — it's a **live traversal of a typed graph**, where the agent doesn't
 know which path it will take until the rep responds.
 
+## Quickstart
+
+```bash
+git clone git@github.com:bfay1/jaul.git && cd jaul
+./bin/jaul
+```
+
+That's it — `./bin/jaul` bootstraps its own Python venv and dependencies on
+first run (no manual `pip install`), then stops and asks you to fill in your
+Twilio credentials in the `.env` it just created (a free trial account works —
+see [Credentials](#credentials)). Run it again and it calls your phone, with
+the agent negotiating live. No `ANTHROPIC_API_KEY` needed on your end — that
+runs server-side on the deployed instance (see [Credentials](#credentials)).
+
+For local development (offline tests, the no-phone mock-rep loop, editing the
+Jac source) see [Setup](#setup) below.
+
 ---
 
 ## How it works
@@ -144,14 +161,15 @@ jac run main.jac
 ### 2. Live phone call — `jaul` (needs Twilio credentials only)
 
 ```bash
-cp .env.example .env   # fill in TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER / TWILIO_TO_NUMBER
 ./bin/jaul
 ```
 
-`jaul` dials Twilio and points it at the **already-deployed Render server**
-(`telephony/dial.jac`'s `DEFAULT_PUBLIC_BASE_URL`) — no local server, no ngrok,
-no `PUBLIC_BASE_URL` to configure. It sources `.env` and activates `jac-env`
-for you, so this really is a one-command demo once credentials are set.
+See [Quickstart](#quickstart) above — first run bootstraps `jac-env` and asks
+for Twilio credentials if `.env` doesn't have them yet; every run after that
+just places the call. `jaul` dials Twilio and points it at the
+**already-deployed Render server** (`telephony/dial.jac`'s
+`DEFAULT_PUBLIC_BASE_URL`) — no local server, no ngrok, no `PUBLIC_BASE_URL`
+to configure.
 
 Symlink it onto your `PATH` to run `jaul` bare, from anywhere:
 ```bash
