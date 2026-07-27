@@ -46,27 +46,67 @@ def pretty(label: str) -> str {
 }
 
 
-"""One hop of the walk: the node it was on, the decision that moved it, and -
-on request - the exchange that produced that decision."""
-def:pub Hop(t: TurnView, index: int, expanded: bool, onToggle: Callable[[int], None]) -> JsxElement {
+# Every tactic node has all five of these leaving it. Which one the walker
+# takes is not known until the rep answers - that is the whole design, so the
+# page shows the road not taken as well as the road taken.
+glob ALL_INTENTS: list[str] = [
+    "SOFT_NO", "STONEWALLING", "NEEDS_ESCALATION", "ACCEPTED", "HARD_NO"
+];
+
+
+"""One candidate edge out of a node - lit if the walker took it, dim if not."""
+def:pub EdgeOption(intent: str, target: str, taken: bool) -> JsxElement {
+    return <div className={"opt" + (" opt-taken" if taken else "")}>
+        <span className="opt-stub"></span>
+        <span className="opt-edge">{intent}</span>
+        <span className="opt-gloss">{intent_label(intent)}</span>
+        <span className="opt-target">{("→ " + pretty(target)) if taken else ""}</span>
+    </div>;
+}
+
+
+"""A node in the graph. `kind` is "tactic" or "final"."""
+def:pub NodeBox(label: str, kind: str) -> JsxElement {
+    return <div className={"nodebox nodebox-" + kind}>
+        <span className="nodedot"></span>
+        <span className="nodelabel">{pretty(label)}</span>
+    </div>;
+}
+
+
+"""One hop: the node the walker was on, then the typed edge it took off it.
+
+The exchange that produced that edge hangs off the edge itself, collapsed -
+the rep's reply is literally what the classifier turned into this edge type.
+"""
+def:pub Step(t: TurnView, index: int, expanded: bool, onToggle: Callable[[int], None]) -> JsxElement {
     def handle(e: MouseEvent) {
         onToggle(index);
     }
 
-    return <li className="hop">
-        <div className="hop-row">
-            <span className="node">{pretty(t.tactic)}</span>
-            <span className="arrow">→</span>
-            <span className="decision">{t.intent}</span>
-            <span className="gloss">{intent_label(t.intent)}</span>
+    return <li className="step">
+        <NodeBox label={t.tactic} kind="tactic" />
+        <div className="link">
+            <div className="fan">
+                {for opt in ALL_INTENTS {
+                    <EdgeOption intent={opt} target={t.next_tactic}
+                                taken={opt == t.intent} key={opt} />;
+                }}
+            </div>
             <button className="peek" onClick={handle}>
-                {"hide" if expanded else "transcript"}
+                {"hide exchange" if expanded else "what the rep said"}
             </button>
+            {<div className="exchange">
+                <div className="say say-agent">
+                    <span className="who">Agent</span>
+                    <p>{t.agent}</p>
+                </div>
+                <div className="say say-rep">
+                    <span className="who">Billing rep</span>
+                    <p>{t.rep}</p>
+                </div>
+            </div> if expanded else None}
         </div>
-        {<div className="hop-body">
-            <p className="line line-agent"><b>Agent</b>{t.agent}</p>
-            <p className="line line-rep"><b>Rep</b>{t.rep}</p>
-        </div> if expanded else None}
     </li>;
 }
 
@@ -137,19 +177,23 @@ def:pub app -> JsxElement {
             </div>
 
             <p className="legend">
-                Each row is one hop of the walker: the tactic it was on, and the
-                typed edge the rep's reply became.
+                Five typed edges leave every tactic node. The walker doesn't
+                know which it takes until the rep answers — the lit one is what
+                the reply was classified as.
             </p>
 
             <ul className="flow">
                 {for i in range(shown) {
-                    <Hop t={turns[i]} index={i} expanded={open_hop == i}
-                         onToggle={toggle_hop} key={str(i)} />;
+                    <Step t={turns[i]} index={i} expanded={open_hop == i}
+                          onToggle={toggle_hop} key={str(i)} />;
                 }}
+                {<li className="step step-last">
+                    <NodeBox label={turns[len(turns) - 1].next_tactic} kind="final" />
+                </li> if done and len(turns) > 0 else None}
             </ul>
 
             {<div className="outcome">
-                <div className="outcome-head">deal reached</div>
+                <div className="outcome-head">terms agreed</div>
                 <p>{meta.deal_terms if meta else ""}</p>
             </div> if done and meta and meta.outcome == "deal_reached" else None}
 

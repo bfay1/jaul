@@ -70,88 +70,142 @@ code, pre, .decision { font-family: ui-monospace, SFMono-Regular, Menlo, monospa
 .muted { color: var(--muted); }
 .legend { margin: 14px 0 10px; color: var(--muted); font-size: 13px; }
 
-/* --- the flow: one row per hop ------------------------------------------ */
+/* --- the graph: nodes, candidate edges, taken edge -------------------- */
 
 .flow { list-style: none; margin: 0; padding: 0; }
 
-.hop {
-  position: relative;
-  padding-left: 16px;
-  border-left: 2px solid var(--line);
-  animation: rise 0.3s ease both;
-}
-
-.hop::before {
-  content: "";
-  position: absolute;
-  left: -5px;
-  top: 15px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
-.hop:last-child { border-left-color: transparent; }
+.step { animation: rise 0.3s ease both; }
 
 @keyframes rise {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: none; }
 }
 
-.hop-row {
+/* nodes */
+
+.nodebox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  font-size: 14px;
+}
+
+.nodedot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex: none;
+}
+
+.nodebox-final {
+  border-color: #23502f;
+  background: #12301b;
+  color: var(--good);
+}
+
+.nodebox-final .nodedot { background: var(--good); }
+
+/* the fan of candidate edges hanging off a node */
+
+.link {
+  margin: 0 0 6px 17px;
+  padding: 8px 0 8px 20px;
+  border-left: 1px solid var(--line);
+}
+
+.opt {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 9px;
-  padding: 9px 0 11px;
+  padding: 2px 0;
+  opacity: 0.34;
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
-.node {
-  padding: 4px 11px;
-  border-radius: 7px;
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  font-size: 13.5px;
-  white-space: nowrap;
+.opt-stub {
+  width: 14px;
+  height: 1px;
+  background: var(--line);
+  flex: none;
+  margin-left: -20px;
 }
 
-.arrow { color: var(--muted); }
-.decision { color: var(--warn); font-size: 12.5px; }
-.gloss { color: var(--muted); font-size: 13px; }
+.opt-edge {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--muted);
+  min-width: 132px;
+}
+
+.opt-gloss { color: var(--muted); }
+.opt-target { margin-left: auto; }
+
+.opt-taken {
+  opacity: 1;
+  font-size: 13px;
+}
+
+.opt-taken .opt-stub { background: var(--warn); height: 2px; }
+.opt-taken .opt-edge { color: var(--warn); font-size: 12.5px; }
+.opt-taken .opt-gloss { color: var(--ink); }
+.opt-taken .opt-target { color: var(--accent); }
 
 .peek {
-  margin-left: auto;
-  padding: 3px 9px;
+  margin: 7px 0 0;
+  padding: 3px 10px;
   border-radius: 6px;
   border: 1px solid var(--line);
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11.5px;
   cursor: pointer;
 }
 
 .peek:hover { color: var(--accent); border-color: var(--accent); }
 
-.hop-body {
-  padding: 12px 14px 4px;
-  margin-bottom: 12px;
-  background: var(--panel);
-  border: 1px solid var(--line);
+/* the exchange behind a taken edge */
+
+.exchange { margin: 10px 0 4px; }
+
+.say {
+  padding: 9px 13px;
   border-radius: 9px;
+  border-left: 3px solid var(--line);
+  margin-bottom: 8px;
 }
 
-.line { margin: 0 0 11px; font-size: 14px; }
-.line b {
+.say p { margin: 0; font-size: 13.5px; }
+
+.who {
   display: block;
-  font-size: 10.5px;
+  font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 1px;
-  margin-bottom: 2px;
+  letter-spacing: 1.1px;
+  margin-bottom: 3px;
 }
-.line-agent b { color: var(--agent); }
-.line-rep b { color: var(--rep); }
-.line-rep { color: #cfd8e3; }
+
+.say-agent {
+  background: rgba(126, 224, 192, 0.06);
+  border-left-color: var(--agent);
+  margin-right: 34px;
+}
+
+.say-agent .who { color: var(--agent); }
+
+.say-rep {
+  background: rgba(240, 167, 160, 0.06);
+  border-left-color: var(--rep);
+  margin-left: 34px;
+}
+
+.say-rep .who { color: var(--rep); }
+.say-rep p { color: #cfd8e3; }
 
 /* --- outcome + controls ------------------------------------------------- */
 
