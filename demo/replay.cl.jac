@@ -99,46 +99,47 @@ def:pub RunLive() -> JsxElement {
     return <section className="runlive">
         <h2>Run it live</h2>
         <p className="sub">
-            The replay above needs nothing. Placing a real call needs a
-            Twilio number and an Anthropic key, both supplied through
-            environment variables - never committed.
+            The replay above needs nothing at all. To have the agent call an
+            actual phone, you need a Twilio trial account - and no Anthropic
+            key, because the model calls run server-side.
         </p>
 
         <ol className="steps">
             <li>
-                <b>Get the code</b>
-                <pre><code>{"git clone https://github.com/bfay1/jaul" + _NL + "cd jaul"}</code></pre>
-            </li>
-            <li>
-                <b>Install the pinned toolchain</b>
+                <b>Clone and run</b>
                 <span className="note">
-                    The repo runs on the jaclang 0.16.7 pip package, not the
-                    standalone binary - they are not interchangeable.
+                    The launcher bootstraps its own Python venv and pinned
+                    dependencies on first run, then writes a
+                    <code> .env</code> and stops so you can fill it in.
                 </span>
-                <pre><code>{"python3 -m venv jac-env" + _NL + "source jac-env/bin/activate" + _NL + "pip install -r requirements.txt"}</code></pre>
+                <pre><code>{"git clone https://github.com/bfay1/jaul" + _NL + "cd jaul" + _NL + "./bin/jaul"}</code></pre>
             </li>
             <li>
-                <b>Add credentials</b>
+                <b>Add your Twilio credentials</b>
                 <span className="note">
-                    Copy <code>.env.example</code> to <code>.env</code> and fill
-                    it in. <code>.env</code> is gitignored.
+                    A free trial account is enough.
+                    <code> .env</code> is gitignored and never committed. Point
+                    <code> TWILIO_TO_NUMBER</code> at your own phone and play
+                    the billing rep yourself - the safe way to demo this.
                 </span>
-                <pre><code>{"ANTHROPIC_API_KEY=..." + _NL + "TWILIO_ACCOUNT_SID=..." + _NL + "TWILIO_AUTH_TOKEN=..." + _NL + "TWILIO_FROM_NUMBER=+1..." + _NL + "TWILIO_TO_NUMBER=+1..."}</code></pre>
+                <pre><code>{"TWILIO_ACCOUNT_SID=..." + _NL + "TWILIO_AUTH_TOKEN=..." + _NL + "TWILIO_FROM_NUMBER=+1..." + _NL + "TWILIO_TO_NUMBER=+1..."}</code></pre>
             </li>
             <li>
-                <b>Try it with no phone and no key first</b>
+                <b>Run it again - your phone rings</b>
                 <span className="note">
-                    A full negotiation against a simulated rep, on MockLLM.
-                </span>
-                <pre><code>{"jac test agent.jac" + _NL + "jac run telephony/demo_mock_server.jac   # then open /live"}</code></pre>
-            </li>
-            <li>
-                <b>Place the real call</b>
-                <span className="note">
-                    Point <code>TWILIO_TO_NUMBER</code> at your own phone and
-                    play the billing rep yourself - the safe way to demo it.
+                    The agent negotiates live, one webhook per turn, building
+                    its tactic graph as the call goes.
                 </span>
                 <pre><code>{"./bin/jaul"}</code></pre>
+            </li>
+            <li>
+                <b>Or skip the phone entirely</b>
+                <span className="note">
+                    The offline tests need no key at all. The full negotiation
+                    loop against the mock rep needs only an
+                    <code> ANTHROPIC_API_KEY</code>, no telephony.
+                </span>
+                <pre><code>{"jac test agent.jac                      # no key needed" + _NL + "jac run telephony/demo_mock_server.jac  # then open /live" + _NL + "jac run main.jac                        # full loop, needs a key"}</code></pre>
             </li>
         </ol>
     </section>;
