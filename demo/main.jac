@@ -4,7 +4,7 @@ Server half: the frozen call's graph, its walker, and its metadata endpoint.
 Client half: the replay page.
 """
 
-import from trace { ReplayCall, call_meta, TurnView, CallMeta, Tactic, Terminal }
+import from calltrace { ReplayCall, call_meta, TurnView, CallMeta, Tactic, Terminal }
 
 cl {
     import ".app.css";

@@ -39,11 +39,17 @@ open http://localhost:8123
 
 | File | What it is |
 |---|---|
-| `trace.sv.jac` | The frozen call as a **real graph** — a `Tactic` node per phase, a typed edge per classified reply — plus the `ReplayCall` walker that traverses it. |
+| `calltrace.jac` | The frozen call as a **real graph** — a `Tactic` node per phase, a typed edge per classified reply — plus the `ReplayCall` walker that traverses it. |
 | `replay.cl.jac` | The page: animated replay, the tactic chain drawing itself, the OSP notes, and the run-live instructions. |
 | `main.jac` | Entry point; wires the server half to the client half. |
 | `app.css` | Styling. |
-| `trace.json` | The captured call, as recorded. Source of truth for `trace.sv.jac`. |
+| `trace.json` | The captured call, as recorded. Source of truth for `calltrace.jac`. |
+
+The module is called `calltrace`, not `trace`, on purpose: `trace` is a Python
+standard-library module name, and shadowing it made the import resolve
+unpredictably once deployed. It is a plain `.jac` (server is the default
+context) rather than a `.sv.jac` variant module for the same reason — one less
+resolution step to go wrong in someone else's sandbox.
 
 ### The demo is not a JSON viewer
 
@@ -86,14 +92,32 @@ Builder/Pro features. So on Free, create the project and paste the files in:
 
 1. Sign in at [jachammer.ai](https://jachammer.ai) and create a new project
    from the **blank template**.
-2. Create these four files and paste in the contents from this directory:
-   `main.jac`, `trace.sv.jac`, `replay.cl.jac`, `app.css`.
+2. Create these four files **at the project root — no folders**, and paste in
+   the contents from this directory:
+   `main.jac`, `calltrace.jac`, `replay.cl.jac`, `app.css`.
    (Its own `jac.toml` comes from the template — the one here is only for
    running locally. If the template's `[serve]` section lacks
    `base_route_app = "app"`, add it, or the app serves at `/cl/app` instead
    of `/`.)
 3. Check the preview renders, then open the **Deploy** tab and choose
    **Sandbox**. Pick a subdomain if you want a memorable URL.
+
+### If the preview fails with `cannot import name 'ReplayCall'`
+
+That means `calltrace.jac` loaded but came up short — almost always a
+**truncated paste**, since the file carries the whole transcript inline as
+long string literals. `ReplayCall` is defined near the bottom, so it is the
+first thing to go missing.
+
+Check the pasted file is **192 lines** and ends with:
+
+```jac
+def:pub call_meta -> CallMeta {
+    return CALL_META;
+}
+```
+
+If it doesn't, re-paste it in two halves rather than one.
 
 No environment variables are needed — that is the whole point of this demo.
 

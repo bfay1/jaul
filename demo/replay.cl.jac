@@ -10,7 +10,7 @@ The page has two halves, in the order the demo needs them:
   2. instructions for running the same agent live, against a real phone call.
 """
 
-sv import from .trace { ReplayCall, call_meta, TurnView, CallMeta }
+sv import from calltrace { ReplayCall, call_meta, TurnView, CallMeta }
 
 
 glob _NL: str = chr(10);
