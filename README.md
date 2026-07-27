@@ -48,9 +48,18 @@ the trace of what the rep actually said each turn:
   the next tactic to try (`choose_next_tactic`) and *builds* the node and edge
   for that move on the spot before traversing it. It cannot know its path in
   advance because the graph doesn't have one until it's walked.
-- **`by llm()` powers three points**: classifying the rep's reply, choosing the
-  next tactic, and generating the agent's line. A fourth `by llm()` plays a
+- **`by llm()` powers four real decision points**: classifying the rep's
+  reply, verifying that an `ACCEPTED` reply actually carries firm terms,
+  choosing the next tactic, and generating the agent's line. A fifth plays a
   mock billing rep so full negotiations can run with no phone call.
+- **A commitment gate stops the agent reporting deals that never happened.**
+  An `ACCEPTED` classification alone doesn't end the call: a second `by llm()`
+  call (`extract_commitment`) reads the same rep line and extracts concrete
+  terms — amount, term length, interest rate. If nothing firm parses out (a
+  vague "I'll note it" or a promise to call back), the intent is downgraded
+  back to `SOFT_NO` and the negotiation keeps going instead of landing on
+  `DealReached` for a non-deal. This was a real bug found in a captured call,
+  not a hypothetical.
 - **Tactic choice and dialogue are grounded in real assistance-program facts**
   — IRS 501(r), Amounts Generally Billed, charity-care thresholds, interest-free
   payment plans — stored as root-anchored `ProgramKnowledge` nodes, flattened
@@ -83,6 +92,9 @@ a different hospital, walks a different path and builds a different graph.
 | `casefile.jac` | Loads a markdown patient case file into agent context (`--case`); also reads `--hospital` |
 | `cases/` | Example patient case files (markdown) |
 | `telephony/` | The transport that carries a live phone call to the Jac core (see below) |
+| `capture_trace.jac` | Runs one real negotiation call and freezes it to `demo/trace.json` — what feeds the offline demo (see below) |
+| `gist_trace.jac` | Adds an LLM-generated one-line gist of each rep reply to the captured trace |
+| `demo/` | A standalone offline demo that replays a captured real call — no API key, Twilio, or phone line. **Different Jac toolchain** (0.34.7 binary, not this project's pinned 0.16.7) — see `demo/README.md` |
 
 **Essentially the entire project is Jac** — including telephony. The one
 exception is `telephony/__init__.py`, which stays `.py` only because Python's
@@ -146,7 +158,8 @@ jac test telephony/test_voice.jac         # ElevenLabs TTS tests (mocked)
 
 ## Running it
 
-There are three ways to run, in increasing order of what they need:
+There are two ways to run, in increasing order of what they need (see also the
+standalone [offline demo](#offline-demo-jachammer) below, which needs neither):
 
 ### 1. Full negotiation loop, no phone (needs `ANTHROPIC_API_KEY`)
 
@@ -238,6 +251,23 @@ the first request after sleep takes a few extra seconds to spin up. Fine for a
 demo — just place the call right after opening the dashboard, or leave the
 `/health` endpoint open in a tab beforehand to keep it warm.
 
+## Offline demo (JacHammer)
+
+`demo/` is a separate, self-contained page that replays **one real, captured
+negotiation call** — no `ANTHROPIC_API_KEY`, no Twilio, no phone line, no
+network calls at runtime. It reconstructs the call as an actual OSP graph
+server-side (a `Tactic` node per phase, typed edges, a `ReplayCall` walker) and
+renders that graph in the browser — it's a real walker traversal of a real
+recorded call, not a JSON transcript viewer with a diagram drawn on top.
+
+**This directory runs on a different Jac than the rest of the repo** — Jac
+0.34.7 (the standalone binary), not this project's pinned `jaclang` 0.16.7 —
+by design, since it needs no agent code at runtime and the two toolchains
+should never have to meet. See `demo/README.md` for how to run it locally, how
+the trace was captured (`capture_trace.jac` + `gist_trace.jac`, both run under
+the *main* project's 0.16.7 toolchain), and how to deploy it to
+[JacHammer](https://jachammer.ai).
+
 ## Patient context (case files)
 
 The agent negotiates on behalf of a specific patient, described in a **single
@@ -328,9 +358,15 @@ needed.
   not an orchestration wrapper around Python control flow.
 - **Typed edges encode state** — the rep's response class is the edge type, not
   a dict key or `switch`.
-- **`by llm()` at three points** — response classification, next-tactic choice,
-  and line generation (as a method on `PatientCase`, so the LLM call's object
-  context is automatic) — plus a fourth that role-plays the rep.
+- **`by llm()` at four real decision points** — response classification,
+  commitment extraction (the gate below), next-tactic choice, and line
+  generation (as a method on `PatientCase`, so the LLM call's object context
+  is automatic) — plus a fifth that role-plays the rep for offline testing.
+- **A second LLM call gates the first, on purpose** — `extract_commitment`
+  only fires after `ACCEPTED`, and re-checks it: no firm terms parsed out of
+  the rep's line means the intent gets downgraded back to `SOFT_NO` before it
+  ever reaches the walker's terminal-node logic. Two classifiers checking
+  each other, not one classifier trusted blindly.
 - **Graph-native persistence, used for something** — not just "state lives on
   the root graph" but genuine cross-call learning: `Hospital`/`CallOutcome`
   nodes accumulate across separate `jac run` invocations, and a later call
@@ -365,3 +401,7 @@ needed.
       (IRS 501(r), AGB, charity care, payment plans)
 - [x] Cross-call learning — `Hospital`/`CallOutcome` persistence across runs
 - [x] Graph visualization — `printgraph()` renders each call's actual path
+- [x] Commitment gate — a second `by llm()` call verifies `ACCEPTED` actually
+      carries firm terms before the walker calls it a deal
+- [x] Offline JacHammer demo — replays a real captured call as a live graph
+      traversal, no API key or network required (`demo/`)
