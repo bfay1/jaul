@@ -32,11 +32,13 @@ test "deal via escalation" {
             agent.RepIntent.NEEDS_ESCALATION,
             agent.TacticMove.ESCALATE,
             "Could I speak with a supervisor about a hardship adjustment?",
-            agent.RepIntent.ACCEPTED
+            agent.RepIntent.ACCEPTED,
+            agent.Commitment(is_firm=True, term_months=24, interest_rate="0%",
+                             summary="Interest-free payment plan over 24 months")
         ],
         rep_lines=[
             "You'd have to talk to my supervisor for that.",
-            "Okay, my supervisor approved an interest-free plan."
+            "Okay, my supervisor approved an interest-free plan over 24 months."
         ]
     );
     assert session.status == "deal_reached";
