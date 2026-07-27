@@ -94,7 +94,16 @@ Builder/Pro features. So on Free, create the project and paste the files in:
    from the **blank template**.
 2. Create these four files **at the project root — no folders**, and paste in
    the contents from this directory:
-   `main.jac`, `calltrace.jac`, `replay.cl.jac`, `app.css`.
+
+   | File | Lines |
+   |---|---|
+   | `main.jac` | 16 |
+   | `calltrace.jac` | 209 |
+   | `replay.cl.jac` | 258 |
+   | `app.css` | 329 |
+
+   Nothing else is needed at runtime — `trace.json` is the capture artifact and
+   `README.md` is this file. The transcript lives inline in `calltrace.jac`.
    (Its own `jac.toml` comes from the template — the one here is only for
    running locally. If the template's `[serve]` section lacks
    `base_route_app = "app"`, add it, or the app serves at `/cl/app` instead
@@ -109,7 +118,7 @@ That means `calltrace.jac` loaded but came up short — almost always a
 long string literals. `ReplayCall` is defined near the bottom, so it is the
 first thing to go missing.
 
-Check the pasted file is **192 lines** and ends with:
+Check the pasted file is **209 lines** and ends with:
 
 ```jac
 def:pub call_meta -> CallMeta {
