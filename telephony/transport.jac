@@ -77,21 +77,15 @@ class TurnBasedTransport(Transport) {
             body = (
                 '<?xml version="1.0" encoding="UTF-8"?>'
                 "<Response>"
-                # `voice_element` is a SIBLING of <Gather>, not nested inside it.
-                # Twilio starts listening for speech the instant <Gather> is
-                # reached, concurrently with anything nested in it - intentional
-                # barge-in support for real callers. Nested here, that meant
-                # Twilio would start listening WHILE the agent was still
-                # speaking; on speakerphone, the residual echo of its own TTS
-                # leaking back into the call gets picked up as "the rep
-                # talking," Gather completes early, and the next turn's TwiML
-                # cuts the agent off mid-sentence. Playing the line first as a
-                # standalone verb means Gather - and therefore listening -
-                # only starts once the agent has actually finished talking.
+                # voice_element plays to completion BEFORE Gather starts listening
+                # (siblings, not nested) - on speakerphone, a nested <Gather> starts
+                # listening the instant playback begins and the mic picks up the
+                # phone's own speaker output, feeding Twilio's STT garbage. A
+                # handset's earpiece has no such acoustic coupling, which is why
+                # this only broke on speaker.
                 f"{voice_element}"
                 f'<Gather input="speech" action="{url}" method="POST" '
-                f"speechTimeout=\"{self.speech_timeout}\" language=\"{self.language}\">"
-                "</Gather>"
+                f"speechTimeout=\"{self.speech_timeout}\" language=\"{self.language}\"/>"
                 # Rep said nothing within the gather: bounce back to reprompt.
                 f'<Redirect method="POST">{url}</Redirect>'
                 "</Response>"

@@ -1,0 +1,51 @@
+{
+  "captured_at": "2026-07-26",
+  "model": "claude-sonnet-4-6",
+  "hospital": "Bay Area General",
+  "patient": "Jordan Rivera",
+  "outcome": "deal_reached",
+  "deal_terms": "Rep committed to an 85% charity care discount bringing the balance to $630, payable over up to 12 months interest-free, with an immediate collections hold and written confirmation within two business days.",
+  "turns": [
+    {
+      "turn": 1,
+      "tactic": "opening",
+      "agent": "Hi, I'm calling on behalf of Jordan Rivera \u2014 date of birth August 14, 1991, account number BAG-4471902 \u2014 regarding a $4,200 balance from an emergency appendectomy on March 12, 2026, and I'd like to ask about any financial assistance or charity care programs Bay Area General may offer, as Jordan is currently uninsured and experiencing significant hardship.",
+      "rep": "Sure, I can pull up that account \u2014 give me just a moment... okay, I'm seeing the balance you're referring to. We do have some assistance options available, but I'd need to know a bit more about Mr. Rivera's situation, like current income and household size, before I can say whether he'd qualify for anything.",
+      "intent": "SOFT_NO",
+      "next_tactic": "ESCALATE"
+    },
+    {
+      "turn": 2,
+      "tactic": "ESCALATE",
+      "agent": "Jordan's household of three has a gross annual income of about $31,000 \u2014 roughly 150% of the federal poverty level \u2014 and given that Bay Area General is a nonprofit hospital, I'd like to respectfully ask to speak with a supervisor or your financial assistance department, because under IRC 501(r)(4) through (6), Bay Area General is required to maintain a written Financial Assistance Policy and must determine FAP eligibility before taking any extraordinary collection actions, and with a collections notice already sent last week, I want to make sure we get Jordan's application reviewed right away.",
+      "rep": "Okay, you're right that we have those obligations under our FAP, and at 150% FPL with a household of three, Mr. Rivera would likely fall within our assistance guidelines \u2014 let me go ahead and transfer you to our financial counseling department, because they're the ones who can actually review and approve an application. Please hold for just a moment while I connect you.",
+      "intent": "NEEDS_ESCALATION",
+      "next_tactic": "ESCALATE"
+    },
+    {
+      "turn": 3,
+      "tactic": "ESCALATE",
+      "agent": "Thank you so much for transferring us \u2014 while we wait for the financial counselor, could I also request that an itemized bill be sent to Jordan so we can review all the charges for accuracy before any payment arrangement is finalized?",
+      "rep": "Sure, that's a completely reasonable request \u2014 I'll make a note on the account to have an itemized statement mailed to the address we have on file, and you can also request it in writing if you'd like a copy sent somewhere specific. Just hold tight, I'm getting the financial counselor on the line now.",
+      "intent": "NEEDS_ESCALATION",
+      "next_tactic": "REQUEST_CHARITY_CARE"
+    },
+    {
+      "turn": 4,
+      "tactic": "REQUEST_CHARITY_CARE",
+      "agent": "Thank you for your patience \u2014 when the financial counselor joins, I'd like to formally apply for charity care on Jordan's behalf, given that Jordan is a single parent supporting two children on roughly $31,000 a year, which is approximately 150% of the federal poverty level, and under Bay Area General's Financial Assistance Policy, that income level very likely falls within the eligibility range for free or significantly reduced care.",
+      "rep": "Hi, thanks for holding \u2014 this is Maria Delgado, financial counselor here at Bay Area General. I've reviewed the notes from the rep and I can see Mr. Rivera's account. Go ahead and walk me through the application details and I'll get this processed for you.",
+      "intent": "NEEDS_ESCALATION",
+      "next_tactic": "REQUEST_CHARITY_CARE"
+    },
+    {
+      "turn": 5,
+      "tactic": "REQUEST_CHARITY_CARE",
+      "agent": "Hi Maria, thank you for joining \u2014 I'm calling on behalf of Jordan Rivera, account BAG-4471902. Jordan is a 34-year-old single parent of two children, a household of three with a gross annual income of approximately $31,000 \u2014 about 150% of the federal poverty level \u2014 who was uninsured at the time of an emergency appendectomy on March 12th due to a February layoff. Given that income level, I'd like to formally request that Jordan be considered for charity care under Bay Area General's Financial Assistance Policy, and I'd also ask that collections activity be paused while the application is under review, as required under IRC 501(r)(6) before any extraordinary collection actions can proceed.",
+      "rep": "Based on what you've described, Mr. Rivera's income at 150% FPL falls squarely within our charity care tier, which provides an 85% discount on the balance \u2014 bringing the $4,200 down to $630 \u2014 and we can set that up as an interest-free payment plan of up to 12 months if he'd like to spread it out. I'm also placing a collections hold on the account right now, effective immediately, so no further collection activity will occur while this is processed and going forward. I'll send written confirmation of the approved assistance and the hold to the address on file within two business days.",
+      "intent": "ACCEPTED",
+      "next_tactic": "deal_reached"
+    }
+  ],
+  "final_node": "deal_reached"
+}

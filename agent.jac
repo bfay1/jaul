@@ -120,8 +120,63 @@ sem choose_next_tactic.last_intent = "How the rep's most recent reply was just c
 sem choose_next_tactic.programs = "Real financial-assistance program facts (name, eligibility, and legal/policy citation) available to ground this choice - e.g. whether a 501(r) obligation or charity-care threshold applies.";
 sem choose_next_tactic.prior_experience = "A summary of prior call outcomes against this same hospital, if any - which tactics led to a deal versus a dead end.";
 
+# --- The commitment gate -----------------------------------------------------
+# A rep who says "absolutely, I'll put a note on the account" sounds like a yes
+# and commits to nothing. Sentiment alone must never close a call: ACCEPTED is
+# honored only when concrete terms actually parse out of the rep's line.
+#
+# Without this, captured calls ended on the rep offering a phone number and a
+# promise to make a note, and the walker recorded `deal_reached` - a deal that
+# never happened. Verified against real captured transcripts, not hypothetical.
+
+obj Commitment {
+    has is_firm: bool = False;
+    has amount: str = "";
+    has term_months: int = 0;
+    has interest_rate: str = "";
+    has summary: str = "";
+}
+sem Commitment = "A concrete financial arrangement a hospital billing rep committed to, if any.";
+sem Commitment.is_firm = "True only if the rep committed to a specific, verifiable arrangement the patient could hold them to. Vague goodwill, 'I'll note it', 'we can look into that', giving out a phone number, or a promise to call back are all False.";
+sem Commitment.amount = "The dollar amount or percentage discount agreed, verbatim, or empty if none was stated.";
+sem Commitment.term_months = "Length of the payment plan in months, or 0 if not stated.";
+sem Commitment.interest_rate = "The stated interest rate or APR, verbatim. Empty if none was stated. Note 'interest-free' or '0%' explicitly if said.";
+sem Commitment.summary = "One short sentence stating what was actually agreed, or why it does not count as a commitment.";
+
+def extract_commitment(response: str) -> Commitment by llm();
+sem extract_commitment = "Read a hospital billing rep's spoken line and extract any concrete financial arrangement they committed to. Be strict: only report is_firm when specific terms were actually stated.";
+sem extract_commitment.response = "The rep's most recent spoken line in the call.";
+
+
+# A plain obj rather than a tuple: an untyped tuple return erases RepIntent to
+# `any` at every unpack site, which `jac check` then rejects downstream.
+obj GatedIntent {
+    has intent: RepIntent = RepIntent.SOFT_NO;
+    has terms: str = "";
+}
+
+
+"""Classify the rep's line, then refuse to let warmth alone end the call.
+
+Only ACCEPTED pays for the second LLM call, and an ACCEPTED carrying no firm
+terms is downgraded to SOFT_NO so the walker keeps negotiating instead of
+walking to DealReached on a promise to make a note.
+"""
+def gated_intent(response: str) -> GatedIntent {
+    intent = classify_response(response);
+    if intent != RepIntent.ACCEPTED {
+        return GatedIntent(intent=intent, terms="");
+    }
+    commitment = extract_commitment(response);
+    if not commitment.is_firm {
+        return GatedIntent(intent=RepIntent.SOFT_NO, terms="");
+    }
+    return GatedIntent(intent=intent, terms=commitment.summary);
+}
+
+
 def rep_reply(transcript: list[str]) -> str by llm();
-sem rep_reply = "You are playing a realistic, moderately resistant hospital billing department representative on a phone call. Respond naturally and briefly to the agent's most recent line, staying consistent with everything said earlier in the call. Be a believable mix of vague deflection, protectiveness about what you're allowed to approve, occasional willingness to loop in a supervisor, and only rarely an immediate yes.";
+sem rep_reply = "You are playing a realistic, moderately resistant hospital billing department representative on a phone call. Respond naturally and briefly - two or three sentences - to the agent's most recent line, staying consistent with everything said earlier in the call. Be a believable mix of vague deflection, protectiveness about what you're allowed to approve, occasional willingness to loop in a supervisor, and only rarely an immediate yes. CRUCIALLY, you must have a real path to authority: a front-line rep genuinely cannot approve a discount, but once the advocate escalates and you hand the call to a supervisor or financial counselor, you are then speaking AS that person - and a counselor presented with a documented case that plainly meets the stated policy does approve it, stating the concrete terms out loud (the specific discount or waiver, the plan length, and that it is interest-free). Never concede terms before escalation; once escalated and the case clearly qualifies, do not stall indefinitely.";
 sem rep_reply.transcript = "The call transcript so far, as alternating 'AGENT: ...' and 'REP: ...' lines. Reply as the REP's next line only.";
 
 
@@ -161,6 +216,27 @@ def reach_terminal(current: Tactic, intent: RepIntent) -> Tactic {
     return dead;
 }
 
+"""Strip a leading speaker label and wrapping quotes off a generated line.
+
+The `sem` strings ask for a bare spoken line, but the transcript the model is
+shown is formatted as "AGENT: ..." / "REP: ...", so it periodically echoes
+that prefix back - and sometimes wraps the whole line in quotes on top. Both
+reach the caller verbatim if left alone: a transcript reads "AGENT: AGENT:
+Hi..." and, worse, a live Twilio call literally speaks the word "agent"
+before the actual sentence.
+"""
+def clean_line(raw: str, label: str) -> str {
+    line: str = raw.strip();
+    if line.upper().startswith(label) {
+        line = line[len(label):].strip();
+    }
+    if len(line) >= 2 and line.startswith("\"") and line.endswith("\"") {
+        line = line[1:len(line) - 1].strip();
+    }
+    return line;
+}
+
+
 """Read which tactic move led to a just-reached terminal node (DealReached or
 DeadEnd), for outcome recording. "opening" means the call ended on the very
 first turn, before any tactic move was ever chosen. Reads the incoming edge
@@ -188,6 +264,7 @@ walker NegotiationAgent {
     has max_turns: int = 6;
     has patient: PatientCase = demo_case();
     has hospital: Hospital | None = None;
+    has deal_terms: str = "";              # OUT: what was actually agreed, if anything
 
     can negotiate with Opening | TacticStep entry {
         self.turns += 1;
@@ -197,13 +274,17 @@ walker NegotiationAgent {
         }
 
         programs = program_context();
-        line = self.patient.generate_line(here.label, self.transcript, programs);
+        line = clean_line(self.patient.generate_line(here.label, self.transcript, programs), "AGENT:");
         self.transcript.append("AGENT: " + line);
 
-        response = rep_reply(self.transcript);
+        response = clean_line(rep_reply(self.transcript), "REP:");
         self.transcript.append("REP: " + response);
 
-        intent = classify_response(response);
+        gated = gated_intent(response);
+        intent = gated.intent;
+        if gated.terms != "" {
+            self.deal_terms = gated.terms;
+        }
 
         if intent == RepIntent.ACCEPTED or intent == RepIntent.HARD_NO {
             terminal_node = reach_terminal(here, intent);
@@ -221,7 +302,8 @@ walker NegotiationAgent {
 
     can reach_deal with DealReached entry {
         self.outcome = "deal_reached";
-        self.transcript.append("OUTCOME: deal reached - " + here.label);
+        here.terms = self.deal_terms;
+        self.transcript.append("OUTCOME: deal reached - " + self.deal_terms);
         if self.hospital is not None {
             record_call_outcome(self.hospital, "deal_reached", move_leading_to(here));
         }
@@ -265,6 +347,7 @@ walker NegotiationTurn {
     has hospital: Hospital | None = None;
     has last_intent: str = "";             # OUT: this turn's RepIntent classification, "" before any reply
     has last_move: str = "";               # OUT: this turn's chosen TacticMove, "" if terminal or none yet
+    has deal_terms: str = "";              # OUT: what was actually agreed, if anything
 
     can step with Opening | TacticStep entry {
         # No rep utterance yet => we just arrived at this tactic (either the
@@ -272,7 +355,7 @@ walker NegotiationTurn {
         # stop, leaving `end_node` here for the next webhook to resume from.
         if self.rep_utterance == "" {
             programs = program_context();
-            self.agent_line = self.patient.generate_line(here.label, self.transcript, programs);
+            self.agent_line = clean_line(self.patient.generate_line(here.label, self.transcript, programs), "AGENT:");
             self.transcript.append("AGENT: " + self.agent_line);
             self.end_node = here;
             disengage;
@@ -283,7 +366,11 @@ walker NegotiationTurn {
         # Clearing rep_utterance means the node we land on takes the branch
         # above and generates the next line.
         self.transcript.append("REP: " + self.rep_utterance);
-        intent = classify_response(self.rep_utterance);
+        gated = gated_intent(self.rep_utterance);
+        intent = gated.intent;
+        if gated.terms != "" {
+            self.deal_terms = gated.terms;
+        }
         self.last_intent = intent.name;
         self.rep_utterance = "";
 
@@ -305,6 +392,7 @@ walker NegotiationTurn {
 
     can arrive_deal with DealReached entry {
         self.status = "deal_reached";
+        here.terms = self.deal_terms;
         self.agent_line = "Wonderful - thank you so much, that's a real help. Have a great day.";
         self.transcript.append("AGENT: " + self.agent_line);
         self.end_node = here;
@@ -334,7 +422,8 @@ test "rep agrees immediately and the call reaches a deal" {
     llm = MockLLM(model_name="mockllm", config={"outputs": [
         "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
         "Sure, let me get that set up for you right now.",
-        RepIntent.ACCEPTED
+        RepIntent.ACCEPTED,
+        Commitment(is_firm=True, amount="40%", summary="40% income-based discount applied to the balance")
     ]});
 
     hospital = get_or_create_hospital("Test Hospital - immediate accept");
@@ -371,7 +460,9 @@ test "escalation followed by acceptance still reaches a deal" {
         TacticMove.ESCALATE,
         "Let me see what my supervisor can authorize for a hardship adjustment.",
         "Okay, my supervisor approved an interest-free payment plan for you.",
-        RepIntent.ACCEPTED
+        RepIntent.ACCEPTED,
+        Commitment(is_firm=True, term_months=24, interest_rate="0%",
+                   summary="Interest-free payment plan over 24 months")
     ]});
 
     hospital = get_or_create_hospital("Test Hospital - escalation then accept");
@@ -379,6 +470,52 @@ test "escalation followed by acceptance still reaches a deal" {
     result = opening spawn NegotiationAgent(hospital=hospital);
 
     assert result.outcome == "deal_reached";
+}
+
+test "a warm non-commitment does not close the call" {
+    # The exact failure two real captured calls hit: the rep offers a phone
+    # number and a promise to put a note on the account, the classifier reads
+    # that warmth as ACCEPTED, and the walker reports a deal that never
+    # happened. The gate must downgrade it to SOFT_NO and keep negotiating.
+    global llm;
+    llm = MockLLM(model_name="mockllm", config={"outputs": [
+        "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
+        "Of course - I'll put a note on the account and you can call financial counseling at 555-0183.",
+        RepIntent.ACCEPTED,
+        Commitment(is_firm=False, summary="Only promised to note it and gave a phone number; no terms stated"),
+        TacticMove.PROPOSE_PAYMENT_PLAN,
+        "Could we set up an interest-free payment plan on the balance instead?",
+        "No, we don't do that here.",
+        RepIntent.HARD_NO
+    ]});
+
+    hospital = get_or_create_hospital("Test Hospital - warm non-commitment");
+    opening = start_call(hospital);
+    result = opening spawn NegotiationAgent(hospital=hospital);
+
+    # It must NOT have closed on the warm line; it kept going and only ended
+    # on the genuine refusal that followed.
+    assert result.outcome == "dead_end";
+    assert result.deal_terms == "";
+    assert any("interest-free payment plan" in line for line in result.transcript);
+}
+
+test "a firm commitment records the agreed terms" {
+    global llm;
+    llm = MockLLM(model_name="mockllm", config={"outputs": [
+        "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
+        "I can approve a 60% charity-care discount on the balance today.",
+        RepIntent.ACCEPTED,
+        Commitment(is_firm=True, amount="60%", summary="60% charity-care discount approved on the balance")
+    ]});
+
+    hospital = get_or_create_hospital("Test Hospital - firm commitment");
+    opening = start_call(hospital);
+    result = opening spawn NegotiationAgent(hospital=hospital);
+
+    assert result.outcome == "deal_reached";
+    assert result.deal_terms == "60% charity-care discount approved on the balance";
+    assert "60%" in result.transcript[-1];
 }
 
 test "cross-call learning accumulates outcomes for the same hospital" {
@@ -403,7 +540,8 @@ test "cross-call learning accumulates outcomes for the same hospital" {
     llm = MockLLM(model_name="mockllm", config={"outputs": [
         "Hi, I'm calling about my account - are there any financial assistance programs I might qualify for?",
         "Sure, let me get that set up for you right now.",
-        RepIntent.ACCEPTED
+        RepIntent.ACCEPTED,
+        Commitment(is_firm=True, amount="40%", summary="40% income-based discount applied to the balance")
     ]});
     opening2 = start_call(hospital);
     result2 = opening2 spawn NegotiationAgent(hospital=hospital);

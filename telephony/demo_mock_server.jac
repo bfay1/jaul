@@ -33,7 +33,9 @@ with entry:__main__ {
         agent.RepIntent.NEEDS_ESCALATION,
         agent.TacticMove.ESCALATE,
         "Thank you - could I speak with a supervisor about setting up the assistance review?",
-        agent.RepIntent.ACCEPTED
+        agent.RepIntent.ACCEPTED,
+        agent.Commitment(is_firm=True, amount="60%",
+                         summary="60% discount approved and collections paused pending the assistance review")
     ]);
 
     # Imported here, after use_mock_llm, so the server module picks up the

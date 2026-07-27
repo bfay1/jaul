@@ -13,3 +13,8 @@ live_calls.jsonl
 # Generated per-run by main.jac (Upgrade 2 visualization) - not source.
 call_graph.dot
 call_graph.svg
+
+# demo/ is a Jac 0.34.7 web app (see demo/README.md); these are build output.
+node_modules/
+demo/assets/
+.DS_Store

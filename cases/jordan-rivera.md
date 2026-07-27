@@ -5,6 +5,13 @@ Jordan Rivera is a 34-year-old single parent of two children (household of 3) in
 Oakland, CA. In March they had an emergency appendectomy at **Bay Area General**,
 a nonprofit hospital.
 
+## Account details
+Every billing rep opens by verifying the patient, so the advocate must have
+these to hand — without them a call stalls before assistance is ever discussed.
+- Date of birth: **1991-08-14**
+- Account / statement number: **BAG-4471902**
+- Date of service: **March 12, 2026** (emergency appendectomy)
+
 ## The bill
 - Total outstanding: **$4,200**
 - Roughly 60 days past due; a collections notice was mailed last week.
